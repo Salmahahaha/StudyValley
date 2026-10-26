@@ -343,3 +343,22 @@ canvas.garden { margin: 0 auto; }
 .move-prompt { background: #fff1b8; border-radius: 8px; padding: 8px; }
 
 .break-card { border-color: #c9a46a; background: linear-gradient(#f4e4bc, #f0dcae); }
+
+/* ---------- v6: study dashboard, session history ---------- */
+.dash-total { display: flex; align-items: baseline; gap: 8px; }
+.dash-total b { font-family: 'Fredoka', 'Nunito', system-ui, sans-serif; font-size: 28px; }
+.split { display: flex; height: 16px; border: 3px solid var(--wood); border-radius: 6px; overflow: hidden; background: #cdb67c; }
+.split span { display: block; height: 100%; }
+.dash-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+.dash-row b { font-family: 'Fredoka', 'Nunito', system-ui, sans-serif; white-space: nowrap; }
+.dash-row small { width: 36px; text-align: right; }
+.days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.days > div { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; }
+.days small { font-size: 11px; white-space: nowrap; }
+.days .today small:last-child { font-weight: 800; color: var(--ink); }
+.days .col { display: flex; align-items: flex-end; width: 100%; height: 64px; background: rgba(0, 0, 0, .05); border-radius: 3px; }
+.days .stack-col { display: flex; flex-direction: column-reverse; width: 100%; border-radius: 3px; overflow: hidden; min-height: 0; }
+.days .stack-col i { display: block; min-height: 2px; }
+.days .today .col { outline: 2px solid var(--wood); outline-offset: 1px; }
+.hist-day { border-top: 2px solid var(--parch2); padding-top: 6px; margin-top: 6px; }
+.hist-head { display: flex; justify-content: space-between; align-items: baseline; }

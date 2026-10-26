@@ -6,6 +6,9 @@ import {
 import { ITEMS, MODULE_COLORS, MODULE_EMOJI } from '../game/data'
 import { useGame } from '../game/store'
 import type { Exam, ExamKind, Module } from '../game/types'
+import { Dashboard } from './Dashboard'
+import { History } from './History'
+import { NotifyPrompt } from './NotifyPrompt'
 import { Sprite } from './Sprite'
 
 const pad = (n: number) => String(n).padStart(2, '0')
@@ -40,11 +43,6 @@ export function Study() {
   const tm = timer && timer.kind !== 'break' ? doc.modules[timer.moduleId] : null
   const onBreak = timer?.kind === 'break'
   const elapsed = timer ? Math.max(0, Math.floor((now - timer.start) / 1000)) : 0
-  const done = !!timer && timer.focusMin !== null && elapsed >= timer.focusMin * 60
-
-  useEffect(() => {
-    if (done) useGame.getState().stopTimer()
-  }, [done])
 
   const wk = weekKey(Date.now())
   const teaser = placed(doc)
@@ -139,6 +137,7 @@ export function Study() {
             ))}
           </div>
           <p className="muted">{mode ? 'Finish the full block for +20% rewards.' : 'Stop whenever you like.'}</p>
+          {mode !== null && <NotifyPrompt quiet />}
           <button className="btn gold big" disabled={!activeId} onClick={() => st.startTimer(activeId, mode)}>
             ▶ Start
           </button>
@@ -166,7 +165,9 @@ export function Study() {
         </div>
       )}
 
-      <Recent />
+      <Dashboard />
+
+      <History />
     </div>
   )
 }
@@ -242,35 +243,6 @@ function ManualLog({ moduleId }: { moduleId: string }) {
           </button>
         </>
       )}
-    </div>
-  )
-}
-
-function Recent() {
-  const doc = useGame((s) => s.doc)
-  const list = live(doc.sessions).sort((a, b) => b.start - a.start).slice(0, 8)
-  if (!list.length) return null
-  return (
-    <div className="panel">
-      <h3>Recent sessions</h3>
-      {list.map((s) => {
-        const m = doc.modules[s.moduleId]
-        const rest = s.kind === 'break'
-        return (
-          <div key={s.id} className="sess">
-            <span className="dot" style={{ background: rest ? '#c9a46a' : m?.color ?? '#888' }} />
-            <div className="grow">
-              <b>{rest ? '☕ Break' : m ? `${m.emoji} ${m.name}` : 'Deleted module'}</b>
-              <small>
-                {new Date(s.start).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ·{' '}
-                {fmtMin(s.minutes)}{s.source === 'manual' ? ' · logged' : s.focus ? ' · focus ✓' : ''}
-                {s.note ? ` · ${s.note}` : ''}
-              </small>
-            </div>
-            <button className="link" onClick={() => confirm('Delete this session and its rewards?') && useGame.getState().deleteSession(s.id)}>✕</button>
-          </div>
-        )
-      })}
     </div>
   )
 }

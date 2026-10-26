@@ -12,6 +12,7 @@ import { Shop } from './ui/Shop'
 import { Quests } from './ui/Quests'
 import { Journal } from './ui/Journal'
 import { ChestModal, RewardModal } from './ui/Modals'
+import { useTimerAlarm } from './ui/useTimerAlarm'
 
 type Tab = 'garden' | 'study' | 'shop' | 'quests' | 'journal'
 const TABS: { id: Tab; icon: string; label: string }[] = [
@@ -66,6 +67,7 @@ export default function App() {
   const syncNow = useGame((s) => s.syncNow)
   const toast = useGame((s) => s.toast)
   const userId = auth?.user.id
+  useTimerAlarm()
 
   useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => setAuth(data.session))

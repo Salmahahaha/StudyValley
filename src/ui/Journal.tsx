@@ -8,6 +8,7 @@ import { supabase } from '../game/supabase'
 import type { Avatar } from '../game/types'
 import { AvatarView } from './AvatarView'
 import { ModuleStats } from './ModuleStats'
+import { NotifyPrompt } from './NotifyPrompt'
 import { Sprite } from './Sprite'
 
 function Heatmap() {
@@ -285,6 +286,7 @@ export function Journal({ email }: { email: string }) {
         <h3>Settings</h3>
         <label className="check"><input type="checkbox" checked={doc.settings.sound} onChange={(e) => st.setSettings({ sound: e.target.checked })} /> Sound effects</label>
         <label className="check"><input type="checkbox" checked={doc.settings.haptics} onChange={(e) => st.setSettings({ haptics: e.target.checked })} /> Vibration (Android)</label>
+        <NotifyPrompt />
         <p className="muted">Signed in as {email}. Sync: {sync}{syncError ? ` (${syncError})` : ''}</p>
         <div className="row">
           <button className="btn small" onClick={() => void st.syncNow()}>Sync now</button>
