@@ -1,16 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  balance, fmtMin, gardenSize, inventory, isPlaceable, levelInfo, ownsZone, placed, plantProgress,
+  animalsIn, balance, gardenSize, inventory, isAnimal, isCorner, levelInfo, ownedUnits, ownsZone, placed, plantProgress,
+  slotOf, slotsFor, unitInSlot,
 } from '../game/calc'
-import { DEFAULT_AVATAR, ITEMS, RARITY_COLOR, ZONES, zoneDef } from '../game/data'
+import type { Slot } from '../game/calc'
+import { DEFAULT_AVATAR, ITEMS, ZONES, zoneDef } from '../game/data'
 import {
-  BAND, GH, GLOW, GW, T, avatarShadow, avatarSpr, bandProps, decorSpr, drawSpr, groundCanvas, isPet, isTree,
-  petSpr, plantSpr, potSpr, seedOf, soilSpr,
+  BAND, GH, GLOW, GW, T, avatarShadow, avatarSpr, bandProps, decorSpr, drawSpr, fenceProps, groundCanvas, isTree, petSpr,
+  plantSpr, potSpr, seedOf, soilSpr,
 } from '../game/sprites'
 import type { Spr } from '../game/sprites'
 import { useGame } from '../game/store'
-import type { Avatar, PlantDef, Unit } from '../game/types'
-import { Sprite } from './Sprite'
+import type { Avatar, Unit } from '../game/types'
+import { AnimalsPanel, TilePanel } from './GardenPanels'
 import { useAtlas } from './useAtlas'
 
 interface Drawn {
@@ -43,19 +45,35 @@ const hash01 = (n: number) => {
   return (h >>> 0) / 4294967296
 }
 
+type Box = [number, number, number, number]
+
 /** a deterministic stroll: walk to a new spot near home, pause, repeat */
-function wander(seed: number, t: number, home: { x: number; y: number }, box: [number, number, number, number], speed: number, seg = 8) {
+function wander(seed: number, t: number, home: { x: number; y: number }, box: Box, speed: number, seg = 8) {
   const k = Math.floor(t / seg)
   const u = t - k * seg
   const spot = (n: number) => ({
     x: Math.min(box[2], Math.max(box[0], home.x + (hash01(seed + n * 7919) - 0.5) * 90)),
     y: Math.min(box[3], Math.max(box[1], home.y + (hash01(seed + n * 104729) - 0.5) * 60)),
   })
-  const a = spot(k)
-  const b = spot(k + 1)
+  return walk(spot(k), spot(k + 1), u, speed)
+}
+
+/** an animal's stroll across the whole garden: pick a spot anywhere in the box, walk there, rest, repeat */
+function roam(seed: number, t: number, box: Box, speed: number, seg = 12) {
+  const k = Math.floor(t / seg)
+  const u = t - k * seg
+  const spot = (n: number) => ({
+    x: box[0] + hash01(seed + n * 7919) * (box[2] - box[0]),
+    y: box[1] + hash01(seed + n * 104729) * (box[3] - box[1]),
+  })
+  return walk(spot(k), spot(k + 1), u, speed, seg - 3)
+}
+
+function walk(a: { x: number; y: number }, b: { x: number; y: number }, u: number, speed: number, maxDur = Infinity) {
   const dx = b.x - a.x
   const dy = b.y - a.y
-  const dur = Math.hypot(dx, dy) / speed
+  // a long way across the garden is covered at a brisker pace instead of overrunning the pause
+  const dur = Math.min(maxDur, Math.hypot(dx, dy) / speed)
   const dir = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 2 : 3) : dy < 0 ? 1 : 0
   if (u < dur) {
     const f = u / dur
@@ -64,16 +82,33 @@ function wander(seed: number, t: number, home: { x: number; y: number }, box: [n
   return { x: b.x, y: b.y, moving: false, dir: dir === 1 ? 0 : dir }
 }
 
+/** where a small decoration stands inside its tile: feet position by slot */
+function standAt(u: Unit, sl: Slot) {
+  const x = u.x ?? 0
+  const y = u.y ?? 0
+  if (isCorner(sl)) {
+    const q = Number(sl[1])
+    return { cx: x * T + 8 + 16 * (q % 2), by: BAND + y * T + 14 + 14 * (q >> 1) }
+  }
+  return { cx: x * T + T / 2, by: BAND + y * T + 27 }
+}
+
+const wideScreen = () => window.matchMedia('(min-width: 900px)').matches
+
 export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () => void }) {
   const doc = useGame((s) => s.doc)
-  const { place, stash, removeUnit, harvest, applyPot, say, buyZone } = useGame.getState()
+  const { move, say, buyZone } = useGame.getState()
   const atlas = useAtlas()
   const level = levelInfo(balance(doc, 'xp')).level
   const [zone, setZone] = useState('meadow')
   const { cols, rows } = gardenSize(level, zone)
   const [sel, setSel] = useState<{ x: number; y: number } | null>(null)
+  const [slot, setSlot] = useState<Slot>('plant')
+  /** the unit being picked up and moved to another tile or garden */
+  const [moving, setMoving] = useState<string | null>(null)
   const avatar: Avatar = doc.settings.avatar ?? DEFAULT_AVATAR
   const showCanvas = ownsZone(doc, zone)
+  const side = useRef<HTMLElement>(null)
 
   const drawn = useMemo<Drawn[]>(
     () =>
@@ -84,16 +119,36 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
       }),
     [doc, zone],
   )
+  const animals = useMemo(() => animalsIn(doc, zone), [doc, zone])
+  const movingUnit = moving ? doc.units[moving] : undefined
+  // a unit that got removed or harvested mid-move can't be moved any more
+  const mover = movingUnit && !movingUnit.gone && !movingUnit.deleted ? movingUnit : undefined
+  const movingAt = mover && mover.x !== undefined && (mover.zone ?? 'meadow') === zone ? { x: mover.x, y: mover.y ?? 0, slot: slotOf(mover) } : null
 
   const wrap = useRef<HTMLDivElement>(null)
   const cv = useRef<HTMLCanvasElement>(null)
   const parts = useRef<Particle[]>([])
-  const view = useRef({ drawn, cols, rows, sel, zone, avatar, atlas })
+  const view = useRef({ drawn, animals, cols, rows, sel, slot, movingAt, zone, avatar, atlas })
   const redraw = useRef<(() => void) | null>(null)
   useEffect(() => {
-    view.current = { drawn, cols, rows, sel, zone, avatar, atlas }
+    view.current = { drawn, animals, cols, rows, sel, slot, movingAt, zone, avatar, atlas }
     redraw.current?.()
   })
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (moving) setMoving(null)
+      else setSel(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [moving])
+  // on a phone the panel sits under the garden, so bring it into view when a tile is picked
+  const selKey = sel ? `${sel.x},${sel.y}` : ''
+  useEffect(() => {
+    if (selKey && !wideScreen()) side.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [selKey])
 
   useEffect(() => {
     const canvas = cv.current
@@ -107,8 +162,11 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
     const resize = () => {
       const dpr = window.devicePixelRatio || 1
       const avail = box.clientWidth * dpr
-      const whole = Math.floor(avail / GW)
-      k = whole >= 3 ? whole : avail / GW
+      let fit = avail / GW
+      // with a side panel there is room to spare across but not down, so keep the whole garden on screen
+      if (wideScreen()) fit = Math.min(fit, ((window.innerHeight - 270) * dpr) / GH)
+      const whole = Math.floor(fit)
+      k = whole >= 3 ? whole : fit
       canvas.width = Math.round(GW * k)
       canvas.height = Math.round(GH * k)
       canvas.style.width = `${(GW * k) / dpr}px`
@@ -118,6 +176,7 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
     resize()
     const ro = new ResizeObserver(resize)
     ro.observe(box)
+    window.addEventListener('resize', resize)
 
     const glow = (x: number, y: number, rad: number, rgb: string, a: number) => {
       const g = ctx.createRadialGradient(x, y, 0, x, y, rad)
@@ -143,18 +202,24 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
       }
       ctx.drawImage(groundCanvas(v.zone, v.cols, v.rows), 0, 0)
 
+      // floor pieces (paths) lie flat on the ground, under everything else
+      for (const { u } of v.drawn) {
+        if (slotOf(u) === 'floor') drawSpr(ctx, decorSpr(u.itemId), (u.x ?? 0) * T + T / 2, BAND + (u.y ?? 0) * T + 31)
+      }
+
       // everything that stands on the ground, painted back to front
       const scene: { y: number; draw: () => void }[] = []
-      for (const p of bandProps(v.zone)) {
+      for (const p of [...bandProps(v.zone), ...fenceProps(v.zone, v.cols, v.rows)]) {
         const s = p.s(t)
         scene.push({ y: p.y, draw: () => drawSpr(ctx, s, p.x, p.y, p.flip) })
       }
-      const box: [number, number, number, number] = [10, BAND + 10, v.cols * T - 10, BAND + v.rows * T - 4]
+      const roamBox: Box = [10, BAND + 10, v.cols * T - 10, BAND + v.rows * T - 4]
       const lights: { x: number; y: number; rgb: string; r: number }[] = []
 
       for (const { u, stage, ready } of v.drawn) {
-        const cx = (u.x ?? 0) * T + T / 2
-        const by = BAND + (u.y ?? 0) * T + 27
+        const sl = slotOf(u)
+        if (sl === 'floor') continue
+        const { cx, by } = standAt(u, sl)
         const def = ITEMS[u.itemId]
         if (GLOW[u.itemId] && (def.kind !== 'plant' || stage === 4)) lights.push({ x: cx, y: by - 12, rgb: GLOW[u.itemId], r: def.kind === 'plant' ? 22 : 34 })
         if (u.pot && GLOW[u.pot]) lights.push({ x: cx, y: by - 4, rgb: GLOW[u.pot], r: 14 })
@@ -191,19 +256,32 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
               }
             },
           })
-        } else if (isPet(u.itemId)) {
-          const home = { x: cx, y: by }
-          const w = wander(seedOf(u.id), t + hash01(seedOf(u.id)) * 50, home, box, u.itemId === 'chick' ? 14 : 20)
-          const s = petSpr(u.itemId, w.moving, w.dir, t)
-          scene.push({ y: w.y, draw: () => drawSpr(ctx, s, w.x, w.y) })
         } else {
-          const s = decorSpr(u.itemId, t + (u.x ?? 0) * 0.7)
+          const s = decorSpr(u.itemId, t + (u.x ?? 0) * 0.7 + (u.y ?? 0) * 0.3)
           scene.push({ y: by, draw: () => drawSpr(ctx, s, cx, by + 2) })
         }
       }
 
+      // animals live in the garden, not on a tile, and wander all over it
+      for (const a of v.animals) {
+        const seed = seedOf(a.id)
+        const tt = t + hash01(seed) * 50
+        if (a.itemId === 'cat') {
+          // the cat pops out of the grass somewhere new each time
+          const n = Math.floor(tt / 16)
+          const x = roamBox[0] + hash01(seed + n * 977) * (roamBox[2] - roamBox[0])
+          const y = roamBox[1] + hash01(seed + n * 1301) * (roamBox[3] - roamBox[1])
+          const s = decorSpr('cat', tt)
+          scene.push({ y, draw: () => drawSpr(ctx, s, x, y + 2) })
+          continue
+        }
+        const w = roam(seed, tt, roamBox, a.itemId === 'chick' ? 14 : 20)
+        const s = petSpr(a.itemId, w.moving, w.dir, t)
+        scene.push({ y: w.y, draw: () => drawSpr(ctx, s, w.x, w.y) })
+      }
+
       // the player strolls about their land
-      const me = wander(42, t, { x: (v.cols * T) / 2, y: BAND + v.rows * T - 18 }, box, 18, 9)
+      const me = wander(42, t, { x: (v.cols * T) / 2, y: BAND + v.rows * T - 18 }, roamBox, 18, 9)
       scene.push({
         y: me.y,
         draw: () => {
@@ -314,23 +392,39 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
         ctx.globalAlpha = 1
       }
 
-      // RPG-style selection cursor: four bouncing corner brackets
-      if (v.sel) {
-        const x0 = v.sel.x * T
-        const y0 = BAND + v.sel.y * T
-        const o = Math.floor(t * 3) % 2
+      // RPG-style cursor: four bouncing corner brackets round a tile or one corner of it
+      const bracket = (x0: number, y0: number, size: number, o: number, inner: string) => {
         const corner = (x: number, y: number, fx: number, fy: number) => {
           ctx.fillStyle = '#2e1c14'
           ctx.fillRect(fx > 0 ? x : x - 5, fy > 0 ? y : y - 2, 6, 3)
           ctx.fillRect(fx > 0 ? x : x - 2, fy > 0 ? y : y - 5, 3, 6)
-          ctx.fillStyle = '#ffffff'
+          ctx.fillStyle = inner
           ctx.fillRect(fx > 0 ? x + 1 : x - 4, fy > 0 ? y + 1 : y - 1, 4, 1)
           ctx.fillRect(fx > 0 ? x + 1 : x - 1, fy > 0 ? y + 1 : y - 4, 1, 4)
         }
         corner(x0 + 1 - o, y0 + 1 - o, 1, 1)
-        corner(x0 + T - 1 + o, y0 + 1 - o, -1, 1)
-        corner(x0 + 1 - o, y0 + T - 1 + o, 1, -1)
-        corner(x0 + T - 1 + o, y0 + T - 1 + o, -1, -1)
+        corner(x0 + size - 1 + o, y0 + 1 - o, -1, 1)
+        corner(x0 + 1 - o, y0 + size - 1 + o, 1, -1)
+        corner(x0 + size - 1 + o, y0 + size - 1 + o, -1, -1)
+      }
+      const o = Math.floor(t * 3) % 2
+      if (v.movingAt) {
+        const m = v.movingAt
+        const x0 = m.x * T + (isCorner(m.slot) ? (Number(m.slot[1]) % 2) * 16 : 0)
+        const y0 = BAND + m.y * T + (isCorner(m.slot) ? (Number(m.slot[1]) >> 1) * 16 : 0)
+        ctx.fillStyle = 'rgba(255,214,90,.28)'
+        ctx.fillRect(x0, y0, isCorner(m.slot) ? 16 : T, isCorner(m.slot) ? 16 : T)
+        bracket(x0, y0, isCorner(m.slot) ? 16 : T, o, '#ffd23f')
+      }
+      if (v.sel) {
+        const x0 = v.sel.x * T
+        const y0 = BAND + v.sel.y * T
+        if (isCorner(v.slot)) {
+          const q = Number(v.slot[1])
+          ctx.fillStyle = 'rgba(255,255,255,.3)'
+          ctx.fillRect(x0 + (q % 2) * 16, y0 + (q >> 1) * 16, 16, 16)
+        }
+        bracket(x0, y0, T, o, '#ffffff')
       }
     }
 
@@ -346,6 +440,7 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
     return () => {
       cancelAnimationFrame(raf)
       ro.disconnect()
+      window.removeEventListener('resize', resize)
       redraw.current = null
     }
   }, [showCanvas])
@@ -371,6 +466,18 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
     }
   }
 
+  /** the slot to start on when a tile is picked: what is already there, else the plant plot */
+  const startSlot = (x: number, y: number): Slot => {
+    const here = placed(doc, zone).filter((u) => u.x === x && u.y === y)
+    if (here.some((u) => slotOf(u) === 'plant')) return 'plant'
+    return here[0] ? slotOf(here[0]) : 'plant'
+  }
+  /** while moving something, the first spot on this tile it can go in */
+  const moveSlot = (m: Unit, x: number, y: number): Slot => {
+    const opts = slotsFor(m.itemId)
+    return opts.find((s) => !unitInSlot(doc, zone, x, y, s)) ?? opts[0]
+  }
+
   const tap = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const r = e.currentTarget.getBoundingClientRect()
     const lx = ((e.clientX - r.left) / r.width) * GW
@@ -389,198 +496,124 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
       setSel(null)
       return
     }
-    setSel(sel?.x === x && sel?.y === y ? null : { x, y })
+    if (mover) {
+      if (ITEMS[mover.itemId].kind === 'plant') {
+        // plants have one plot per tile, so a tap is enough: move there, or swap with the plant that's there
+        const err = move(mover.id, x, y, zone, 'plant')
+        if (err) say(err)
+        else {
+          puff(x, y)
+          setMoving(null)
+          setSel({ x, y })
+          setSlot('plant')
+        }
+      } else {
+        setSel({ x, y })
+        setSlot(moveSlot(mover, x, y))
+      }
+      return
+    }
+    if (sel?.x === x && sel?.y === y) {
+      setSel(null)
+      return
+    }
+    setSel({ x, y })
+    setSlot(startSlot(x, y))
   }
 
-  const unitAt = sel ? placed(doc, zone).find((u) => u.x === sel.x && u.y === sel.y) : undefined
-  const bag = inventory(doc).filter((u) => isPlaceable(u.itemId))
   const z = zoneDef(zone)
+  const ownsAnimals = ownedUnits(doc).some((u) => isAnimal(u.itemId))
+  const nothingYet = showCanvas && placed(doc).length === 0 && !ownsAnimals && inventory(doc).length === 0
 
   return (
-    <div className="stack">
-      <div className="chips zones">
-        {ZONES.map((zd) => {
-          const owned = ownsZone(doc, zd.id)
-          return (
-            <button
-              key={zd.id}
-              className={`chip ${zone === zd.id ? 'on' : ''} ${owned ? '' : 'locked-chip'}`}
-              onClick={() => { setZone(zd.id); setSel(null) }}
-            >
-              {owned ? zd.emoji : '🔒'} {zd.name}
-            </button>
-          )
-        })}
-      </div>
-
-      {!showCanvas ? (
-        <div className="panel center zone-lock">
-          <p className="big">{z.emoji} {z.name}</p>
-          <p>{z.blurb}</p>
-          <p className="muted">Requires level {z.minLevel}{level < z.minLevel ? ` (you're level ${level})` : ''}</p>
-          <button
-            className="btn gold"
-            disabled={level < z.minLevel}
-            onClick={() => { const err = buyZone(zone); if (err) say(err) }}
-          >
-            Unlock for {z.gemCost ? `${z.gemCost} 💎` : `${z.cost.toLocaleString()} 🪙`}
-          </button>
-        </div>
-      ) : (
-        <>
-          <div ref={wrap} className="garden-wrap">
-            <canvas ref={cv} className="garden" onPointerDown={tap} />
-          </div>
-          {z.speed > 1 && <p className="zone-note">{z.emoji} Plants here grow {Math.round((z.speed - 1) * 100)}% faster</p>}
-        </>
-      )}
-
-      {showCanvas && !sel && placed(doc).length === 0 && (
-        <div className="panel center">
-          <p className="big">Your garden is empty 🌿</p>
-          <p>Grab some seeds from the shop, plant them, then study to make them grow.</p>
-          <div className="row" style={{ justifyContent: 'center' }}>
-            <button className="btn gold" onClick={goShop}>Visit shop</button>
-            <button className="btn" onClick={goStudy}>Start studying</button>
-          </div>
-        </div>
-      )}
-
-      {sel && !unitAt && (
-        <div className="panel">
-          <div className="row spread">
-            <h3>Empty plot</h3>
-            <button className="link" onClick={() => setSel(null)}>Close</button>
-          </div>
-          {bag.length === 0 ? (
-            <p>Nothing in your bag to place. <button className="link" onClick={goShop}>Visit the shop →</button></p>
-          ) : (
-            <div className="grid-items">
-              {Object.entries(
-                bag.reduce<Record<string, Unit[]>>((m, u) => {
-                  ;(m[u.itemId] ??= []).push(u)
-                  return m
-                }, {}),
-              ).map(([id, list]) => (
-                <button
-                  key={id}
-                  className="item"
-                  onClick={() => {
-                    const err = place(list[0].id, sel.x, sel.y, zone)
-                    if (err) say(err)
-                    else {
-                      puff(sel.x, sel.y)
-                      setSel(null)
-                    }
-                  }}
-                >
-                  <Sprite itemId={id} size={44} />
-                  <span>{ITEMS[id].name}</span>
-                  <b>×{list.length}</b>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {sel && unitAt && (
-        <TileInfo
-          key={unitAt.id}
-          unit={unitAt}
-          onClose={() => setSel(null)}
-          harvest={() => {
-            const def = ITEMS[unitAt.itemId] as PlantDef
-            burst(sel.x, sel.y, def.harvest, plantSpr(unitAt.itemId, 4))
-            harvest(unitAt.id)
-            setSel(null)
-          }}
-          remove={() => {
-            if (confirm(`Remove ${ITEMS[unitAt.itemId].name}? Plants can't be recovered.`)) { removeUnit(unitAt.id); setSel(null) }
-          }}
-          stash={() => { stash(unitAt.id); setSel(null) }}
-          applyPot={(potUnitId) => { applyPot(unitAt.id, potUnitId); puff(sel.x, sel.y) }}
-        />
-      )}
-    </div>
-  )
-}
-
-function TileInfo(props: {
-  unit: Unit
-  onClose: () => void
-  harvest: () => void
-  remove: () => void
-  stash: () => void
-  applyPot: (potUnitId: string) => void
-}) {
-  const doc = useGame((s) => s.doc)
-  const { unit } = props
-  const def = ITEMS[unit.itemId]
-  if (def.kind === 'decor')
-    return (
-      <div className="panel">
-        <div className="row spread">
-          <h3>{def.name}</h3>
-          <button className="link" onClick={props.onClose}>Close</button>
-        </div>
-        <div className="row" style={{ flexWrap: 'nowrap' }}>
-          <Sprite itemId={unit.itemId} size={72} animate />
-          <p className="grow">{def.blurb}</p>
-        </div>
-        <button className="btn ghost" onClick={props.stash}>Move back to bag</button>
-      </div>
-    )
-  if (def.kind !== 'plant') return null
-  const plant = def as PlantDef
-  const p = plantProgress(doc, unit)
-  const pots = inventory(doc).filter((u) => ITEMS[u.itemId].kind === 'pot')
-  const stageNames = ['Seed', 'Sprout', 'Growing', 'Nearly there', 'Ready!']
-  const regrowing = !!(plant.regrow && unit.cycles)
-  return (
-    <div className="panel">
-      <div className="row spread">
-        <h3>
-          {plant.name} <small style={{ color: RARITY_COLOR[plant.rarity] }}>{plant.rarity}</small>
-        </h3>
-        <button className="link" onClick={props.onClose}>Close</button>
-      </div>
-      <div className="row" style={{ flexWrap: 'nowrap' }}>
-        <Sprite itemId={unit.itemId} stage={p.stage} pot={unit.pot} size={80} />
-        <div className="grow">
-          <p>{regrowing && !p.ready ? 'Growing new fruit' : stageNames[p.stage]}{unit.pot ? ` · ${ITEMS[unit.pot].name}` : ''}</p>
-          <div className="bar"><span style={{ width: `${p.ratio * 100}%` }} /></div>
-          <p className="muted">
-            {p.ready ? 'Ready to harvest!' : `${fmtMin(p.left)} of study until ${regrowing ? 'the next crop' : 'harvest'}`}
-          </p>
-          {plant.regrow && <p className="muted">🌳 Keeps fruiting after each harvest</p>}
-        </div>
-      </div>
-      {p.ready && (
-        <button className="btn gold" onClick={props.harvest}>
-          Harvest +{plant.harvest} 🪙{plant.harvestGems ? ` +${plant.harvestGems} 💎` : ''}
-        </button>
-      )}
-      {pots.length > 0 && !isTree(unit.itemId) && (
-        <>
-          <h4>Repot</h4>
-          <div className="grid-items">
-            {Object.entries(
-              pots.reduce<Record<string, Unit[]>>((m, u) => {
-                ;(m[u.itemId] ??= []).push(u)
-                return m
-              }, {}),
-            ).map(([id, list]) => (
-              <button key={id} className="item" onClick={() => props.applyPot(list[0].id)}>
-                <Sprite itemId={id} size={36} />
-                <span>{ITEMS[id].name}</span>
-                <b>×{list.length}</b>
+    <div className="garden-layout">
+      <div className="garden-main stack">
+        <div className="chips zones">
+          {ZONES.map((zd) => {
+            const owned = ownsZone(doc, zd.id)
+            return (
+              <button
+                key={zd.id}
+                className={`chip ${zone === zd.id ? 'on' : ''} ${owned ? '' : 'locked-chip'}`}
+                onClick={() => { setZone(zd.id); setSel(null) }}
+              >
+                {owned ? zd.emoji : '🔒'} {zd.name}
               </button>
-            ))}
+            )
+          })}
+        </div>
+
+        {!showCanvas ? (
+          <div className="panel center zone-lock">
+            <p className="big">{z.emoji} {z.name}</p>
+            <p>{z.blurb}</p>
+            <p className="muted">Requires level {z.minLevel}{level < z.minLevel ? ` (you're level ${level})` : ''}</p>
+            <button
+              className="btn gold"
+              disabled={level < z.minLevel}
+              onClick={() => { const err = buyZone(zone); if (err) say(err) }}
+            >
+              Unlock for {z.gemCost ? `${z.gemCost} 💎` : `${z.cost.toLocaleString()} 🪙`}
+            </button>
           </div>
-        </>
-      )}
-      <button className="btn red small" onClick={props.remove}>Remove plant</button>
+        ) : (
+          <>
+            <div ref={wrap} className="garden-wrap">
+              <canvas ref={cv} className="garden" onPointerDown={tap} />
+            </div>
+            {z.speed > 1 && <p className="zone-note">{z.emoji} Plants here grow {Math.round((z.speed - 1) * 100)}% faster</p>}
+          </>
+        )}
+      </div>
+
+      <aside ref={side} className="garden-side stack">
+        {mover && (
+          <div className="panel move-banner">
+            <p>✋ Moving <b>{ITEMS[mover.itemId].name}</b>. {ITEMS[mover.itemId].kind === 'plant' ? 'Tap a tile to put it there' : 'Tap a tile, then a spot on it'}. You can switch gardens too.</p>
+            <button className="link" onClick={() => setMoving(null)}>Cancel</button>
+          </div>
+        )}
+
+        {showCanvas && sel && (
+          <TilePanel
+            zone={zone}
+            x={sel.x}
+            y={sel.y}
+            slot={slot}
+            setSlot={setSlot}
+            moving={mover?.id ?? null}
+            setMoving={setMoving}
+            onClose={() => setSel(null)}
+            fx={{ puff, burst }}
+            goShop={goShop}
+          />
+        )}
+
+        {showCanvas && !sel && (
+          <div className="panel">
+            {nothingYet ? (
+              <>
+                <p className="big">Your garden is empty 🌿</p>
+                <p>Grab some seeds from the shop, plant them, then study to make them grow.</p>
+                <div className="row">
+                  <button className="btn gold" onClick={goShop}>Visit shop</button>
+                  <button className="btn" onClick={goStudy}>Start studying</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3>🌿 Your garden</h3>
+                <p className="muted">
+                  Tap a tile to plant or decorate it. Every tile has a plot for a plant plus corners, a centre and a floor for decorations, so you can mix them.
+                  Tap a plant or decoration, then ✋ Move to rearrange.
+                </p>
+              </>
+            )}
+          </div>
+        )}
+
+        {showCanvas && <AnimalsPanel zone={zone} goShop={goShop} />}
+      </aside>
     </div>
   )
 }

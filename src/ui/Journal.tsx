@@ -1,7 +1,8 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ACHIEVEMENTS, isUnlocked } from '../game/achievements'
-import { balance, dateKey, fmtMin, levelInfo, live, ownedUnits, streak } from '../game/calc'
+import { balance, dateKey, fmtMin, levelInfo, live, ownedUnits, streak, studySessions } from '../game/calc'
 import { COSMETICS, DECOR, DEFAULT_AVATAR, HAIR, ITEMS, PLANTS, POTS, RARITY_COLOR, SKIN, titleFor } from '../game/data'
+import { BACKS, CUTS, FRINGES, HAIR_PRESETS, TAILS, hairColorOf, sameSpec, specOf, validHex } from '../game/hair'
 import { useGame } from '../game/store'
 import { supabase } from '../game/supabase'
 import type { Avatar } from '../game/types'
@@ -12,7 +13,7 @@ import { Sprite } from './Sprite'
 function Heatmap() {
   const doc = useGame((s) => s.doc)
   const per: Record<string, number> = {}
-  for (const s of live(doc.sessions)) per[dateKey(s.start)] = (per[dateKey(s.start)] ?? 0) + s.eff
+  for (const s of studySessions(doc)) per[dateKey(s.start)] = (per[dateKey(s.start)] ?? 0) + s.eff
   const today = new Date()
   today.setHours(12, 0, 0, 0)
   const monday = new Date(today)
@@ -39,6 +40,31 @@ function Heatmap() {
   )
 }
 
+/** a colour picker that waits for you to settle on a colour before saving it */
+function ColorPick({ value, onPick, label }: { value: string; onPick: (hex: string) => void; label: string }) {
+  // while the picker is being dragged the draft shows; once saved it goes back to following the stored value
+  const [draft, setDraft] = useState<string | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => () => clearTimeout(timer.current), [])
+  return (
+    <input
+      type="color"
+      className="color-pick"
+      aria-label={label}
+      value={draft ?? value}
+      onChange={(e) => {
+        const v = e.target.value
+        setDraft(v)
+        clearTimeout(timer.current)
+        timer.current = setTimeout(() => {
+          onPick(v)
+          setDraft(null)
+        }, 200)
+      }}
+    />
+  )
+}
+
 function Wardrobe() {
   const doc = useGame((s) => s.doc)
   const st = useGame.getState()
@@ -47,6 +73,16 @@ function Wardrobe() {
   const set = (patch: Partial<Avatar>) => st.setSettings({ avatar: { ...av, ...patch } })
   const hats = COSMETICS.filter((c) => c.slot === 'hat' && owned.has(c.id))
   const outfits = COSMETICS.filter((c) => c.slot === 'outfit' && owned.has(c.id))
+  const spec = specOf(av)
+  const custom = !!av.hairSpec && !HAIR_PRESETS.some((p) => sameSpec(p.spec, spec))
+  const setSpec = (patch: Partial<typeof spec>) => set({ hairSpec: { ...spec, ...patch } })
+  const color = hairColorOf(av)
+  const parts: [string, string[], keyof typeof spec][] = [
+    ['Cut', CUTS, 'cut'],
+    ['Fringe', FRINGES, 'fringe'],
+    ['Length', BACKS, 'back'],
+    ['Extras', TAILS, 'tail'],
+  ]
 
   return (
     <div className="panel">
@@ -65,20 +101,67 @@ function Wardrobe() {
             </div>
           </div>
           <div>
-            <small>Hair</small>
+            <small>Hair colour</small>
             <div className="chips">
-              {['Short', 'Long', 'Bun'].map((h, i) => (
-                <button key={h} className={`chip ${av.hair === i ? 'on' : ''}`} onClick={() => set({ hair: i })}>{h}</button>
-              ))}
-            </div>
-            <div className="chips" style={{ marginTop: 6 }}>
               {HAIR.map((c, i) => (
-                <button key={c} className={`swatch ${av.hairColor === i ? 'on' : ''}`} style={{ background: c }} onClick={() => set({ hairColor: i })} aria-label={`Hair colour ${i + 1}`} />
+                <button key={c} className={`swatch ${!av.hairHex && av.hairColor === i ? 'on' : ''}`} style={{ background: c }} onClick={() => set({ hairColor: i, hairHex: undefined })} aria-label={`Hair colour ${i + 1}`} />
               ))}
+              <label className={`swatch custom ${av.hairHex ? 'on' : ''}`} style={av.hairHex ? { background: av.hairHex } : undefined} title="Pick any colour">
+                {!av.hairHex && '🎨'}
+                <ColorPick value={color} label="Custom hair colour" onPick={(hex) => set({ hairHex: hex })} />
+              </label>
             </div>
+          </div>
+          <div>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={validHex(av.hairTip)}
+                onChange={(e) => set({ hairTip: e.target.checked ? '#ec7fb2' : undefined })}
+              />
+              Dyed tips (ombre)
+            </label>
+            {validHex(av.hairTip) && (
+              <div className="chips" style={{ marginTop: 6 }}>
+                {HAIR.map((c) => (
+                  <button key={c} className={`swatch ${av.hairTip === c ? 'on' : ''}`} style={{ background: c }} onClick={() => set({ hairTip: c })} aria-label={`Tip colour ${c}`} />
+                ))}
+                <label className="swatch custom" title="Pick any tip colour">
+                  🎨
+                  <ColorPick value={av.hairTip} label="Custom tip colour" onPick={(hex) => set({ hairTip: hex })} />
+                </label>
+              </div>
+            )}
           </div>
         </div>
       </div>
+
+      <small>Hairstyle</small>
+      <div className="hair-grid">
+        {HAIR_PRESETS.map((p, i) => {
+          const on = !av.hairSpec ? av.hair === i : sameSpec(p.spec, spec)
+          return (
+            <button key={p.name} className={`hair-opt ${on ? 'on' : ''}`} onClick={() => set({ hair: i, hairSpec: undefined })} title={p.name}>
+              <AvatarView avatar={{ ...av, hair: i, hairSpec: undefined, hat: undefined }} size={48} />
+              <span>{p.name}</span>
+            </button>
+          )
+        })}
+      </div>
+      <div className="hair-custom">
+        <small>Mix your own{custom ? ' (custom)' : ''}</small>
+        {parts.map(([title, names, key]) => (
+          <div key={title} className="hair-part">
+            <b>{title}</b>
+            <div className="chips">
+              {names.map((n, i) => (
+                <button key={n} className={`chip ${spec[key] === i ? 'on' : ''}`} onClick={() => setSpec({ [key]: i })}>{n}</button>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+
       <small>Hat</small>
       <div className="chips">
         <button className={`chip ${!av.hat ? 'on' : ''}`} onClick={() => set({ hat: undefined })}>None</button>
@@ -147,7 +230,7 @@ export function Journal({ email }: { email: string }) {
   const syncError = useGame((s) => s.syncError)
   const st = useGame.getState()
   const file = useRef<HTMLInputElement>(null)
-  const sessions = live(doc.sessions)
+  const sessions = studySessions(doc)
   const total = sessions.reduce((t, s) => t + s.minutes, 0)
   const everOwned = new Set(live(doc.units).map((u) => u.itemId))
   const harvested = live(doc.units).filter((u) => u.harvested).length

@@ -48,6 +48,8 @@ export interface Session extends Stamped {
   focus: boolean
   note?: string
   drop?: Drop
+  /** a rest session: half rewards, and kept out of study stats. Missing means study. */
+  kind?: 'study' | 'break'
 }
 
 export interface LedgerEntry extends Stamped {
@@ -68,15 +70,35 @@ export interface Unit extends Stamped {
   /** how many times a fruit tree has been harvested */
   cycles?: number
   zone?: string
+  /** corner of the tile (0 back-left, 1 back-right, 2 front-left, 3 front-right) for small decor; missing means the centre */
+  q?: number
+  /** growth minutes already earned before the plant was moved to another garden */
+  banked?: number
+  /** when growth started counting again after such a move */
+  growFrom?: number
   pot?: string
   gone?: boolean
   harvested?: boolean
 }
 
+export interface HairSpec {
+  cut: number
+  fringe: number
+  back: number
+  tail: number
+}
+
 export interface Avatar {
   skin: number
+  /** hairstyle preset */
   hair: number
   hairColor: number
+  /** fine-tuned hair that overrides the preset */
+  hairSpec?: HairSpec
+  /** custom hair colour (#rrggbb) that overrides hairColor */
+  hairHex?: string
+  /** colour of the hair ends, for an ombre */
+  hairTip?: string
   hat?: string
   outfit?: string
 }
@@ -102,6 +124,8 @@ export interface ActiveTimer {
   moduleId: string
   start: number
   focusMin: number | null
+  /** a break has no module and always runs for a set time */
+  kind?: 'break'
 }
 
 export type Rarity = 'common' | 'uncommon' | 'rare' | 'legendary'
@@ -171,6 +195,7 @@ export interface ZoneDef {
 }
 
 export interface RewardSummary {
+  kind?: 'break'
   minutes: number
   gold: number
   xp: number

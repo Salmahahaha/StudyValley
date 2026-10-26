@@ -117,8 +117,20 @@ export const ZONES: ZoneDef[] = [
 export const zoneDef = (id?: string) => ZONES.find((z) => z.id === (id ?? 'meadow')) ?? ZONES[0]
 
 export const SKIN = ['#f6d2b0', '#e8b78a', '#c98f5f', '#9b6a41', '#6b4528']
-export const HAIR = ['#3a2616', '#6b3a1a', '#c9892a', '#e8d070', '#c94a4a', '#7a5cd6']
+/** the first six are the originals, so saved avatars keep their colour */
+export const HAIR = [
+  '#3a2616', '#6b3a1a', '#c9892a', '#e8d070', '#c94a4a', '#7a5cd6',
+  '#17141a', '#8a3a24', '#e08a3a', '#d6d8e2', '#f6f1e4', '#ec7fb2', '#4a9fd8', '#3fb58a', '#27306e',
+]
 export const DEFAULT_AVATAR = { skin: 1, hair: 0, hairColor: 0 }
+/** decor that is small enough to sit in a corner of a tile next to a plant; everything else takes the tile centre */
+const SMALL_DECOR = new Set([
+  'flowers', 'lantern', 'crates', 'bench', 'fairylights', 'fence', 'pond', 'mushrooms', 'cairn', 'toadstool',
+  'chanterelles', 'bush', 'fernclump', 'stump', 'log',
+])
+export const isSmallDecor = (id: string) => SMALL_DECOR.has(id)
+/** laid flat on the ground, under everything else on the tile */
+export const isFloorDecor = (id: string) => id === 'path'
 export const PLANTS = plants
 export const POTS = pots
 export const DECOR = decor

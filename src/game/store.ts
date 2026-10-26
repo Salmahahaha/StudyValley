@@ -1,9 +1,10 @@
 import { create } from 'zustand'
 import {
-  MIN, STREAK_MIN, balance, boss, claimed, dailyQuests, dateKey, emptyDoc, examInfo, gardenSize, inventory,
-  levelInfo, live, minutesOnDay, moduleExams, ownsZone, placed, plantProgress, rewardFor, rollDrop, streak, uid, weekKey,
-  weekMinutes,
+  BREAK_MAX, BREAK_MIN, MIN, STREAK_MIN, balance, boss, claimed, dailyQuests, dateKey, emptyDoc, examInfo, inventory,
+  isCorner, levelInfo, live, minutesOnDay, moduleExams, ownsZone, plantProgress, rewardFor, rollDrop, slotError, slotOf,
+  streak, uid, unitInSlot, weekKey, weekMinutes,
 } from './calc'
+import type { Slot } from './calc'
 import { ITEMS, zoneDef } from './data'
 import { awardAchievements } from './achievements'
 import { configureFeedback, sfx } from './audio'
@@ -42,14 +43,19 @@ interface State {
   deleteModule: (id: string) => void
 
   startTimer: (moduleId: string, focusMin: number | null) => void
+  startBreak: (minutes: number) => void
   stopTimer: () => void
   cancelTimer: () => void
   logManual: (moduleId: string, minutes: number, day: string, note?: string) => void
   deleteSession: (id: string) => void
 
   buy: (itemId: string) => string | null
-  place: (unitId: string, x: number, y: number, zone: string) => string | null
+  place: (unitId: string, x: number, y: number, zone: string, slot: Slot) => string | null
+  /** moves a placed plant or decor to another tile, slot or garden (swapping with whatever is in that slot) */
+  move: (unitId: string, x: number, y: number, zone: string, slot: Slot) => string | null
   stash: (unitId: string) => void
+  /** sends an animal to roam a garden, or back to the bag with null */
+  setAnimalZone: (unitId: string, zone: string | null) => void
   removeUnit: (unitId: string) => void
   applyPot: (plantUnitId: string, potUnitId: string) => void
   harvest: (unitId: string) => void
@@ -82,6 +88,21 @@ function addLedger(d: Doc, id: string, cur: LedgerEntry['cur'], delta: number, r
 function addUnit(d: Doc, itemId: string, id: string = uid()) {
   d.units[id] = { id, itemId, acquiredAt: Date.now(), updatedAt: Date.now() }
   return id
+}
+
+/** a unit set down at a new tile slot. A plant that changes garden banks its growth so far, so the new garden's speed only applies from now on. */
+function relocated(doc: Doc, u: Unit, x: number, y: number, zone: string, slot: Slot, now: number): Unit {
+  const { q: _q, ...rest } = u
+  const next: Unit = { ...rest, x, y, zone, updatedAt: now }
+  if (isCorner(slot)) next.q = Number(slot[1])
+  if (ITEMS[u.itemId].kind === 'plant') {
+    if (u.x === undefined) next.plantedAt = now
+    else if ((u.zone ?? 'meadow') !== zone) {
+      next.banked = plantProgress(doc, u).minutes
+      next.growFrom = now
+    }
+  }
+  return next
 }
 
 const STREAK_REWARDS: Record<number, { gold?: number; gem?: number }> = {
@@ -122,25 +143,31 @@ export const useGame = create<State>()((set, get) => {
     }
   }
 
-  const finishSession = (moduleId: string, start: number, minutes: number, source: 'timer' | 'manual', focus: boolean, note?: string) => {
+  const finishSession = (
+    moduleId: string, start: number, minutes: number, source: 'timer' | 'manual', focus: boolean, note?: string,
+    kind: 'study' | 'break' = 'study',
+  ) => {
+    const rest = kind === 'break'
     const before = get().doc
     const now = Date.now()
     const day = dateKey(start)
-    const manualToday = live(before.sessions)
-      .filter((s) => s.source === 'manual' && dateKey(s.start) === day)
+    const usedToday = live(before.sessions)
+      .filter((s) => dateKey(s.start) === day && (rest ? s.kind === 'break' : s.source === 'manual' && s.kind !== 'break'))
       .reduce((t, s) => t + s.minutes, 0)
     const streakBefore = streak(before)
     const levelBefore = levelInfo(balance(before, 'xp')).level
-    const r = rewardFor(minutes, source, focus, streakBefore, manualToday)
-    const drop: Drop | undefined = rollDrop(r.eff, r.gold, levelBefore)
+    const r = rewardFor(minutes, rest ? 'break' : source, focus, streakBefore, usedToday)
+    // a break is for resting: no lucky finds and no streak milestones
+    const drop: Drop | undefined = rest ? undefined : rollDrop(r.eff, r.gold, levelBefore)
     const id = uid()
+    const what = rest ? 'Break' : 'Study session'
     let bonusGold = 0
     let toast: string | null = null
 
     commit((d) => {
-      d.sessions[id] = { id, moduleId, start, minutes, eff: r.eff, source, focus, note, drop, updatedAt: now }
-      addLedger(d, `${id}:gold`, 'gold', r.gold, 'Study session', now)
-      addLedger(d, `${id}:xp`, 'xp', r.xp, 'Study session', now)
+      d.sessions[id] = { id, moduleId, start, minutes, eff: r.eff, source, focus, note, drop, updatedAt: now, ...(rest ? { kind } : {}) }
+      addLedger(d, `${id}:gold`, 'gold', r.gold, what, now)
+      addLedger(d, `${id}:xp`, 'xp', r.xp, what, now)
       if (drop?.type === 'gold') {
         bonusGold = drop.amount ?? 0
         addLedger(d, `${id}:bonus`, 'gold', bonusGold, 'Lucky find', now)
@@ -150,7 +177,7 @@ export const useGame = create<State>()((set, get) => {
 
       const n = streak(d)
       const sr = STREAK_REWARDS[n]
-      if (sr && r.eff >= STREAK_MIN) {
+      if (sr && !rest && r.eff >= STREAK_MIN) {
         const kid = `streak:${n}:${dateKey(now)}`
         if (!d.ledger[kid] && !d.ledger[`${kid}:g`]) {
           addLedger(d, kid, 'gold', sr.gold ?? 0, `${n}-day streak`, now)
@@ -164,7 +191,7 @@ export const useGame = create<State>()((set, get) => {
     const levelAfter = levelInfo(balance(after, 'xp')).level
     const summary: RewardSummary = {
       minutes, gold: r.gold, xp: r.xp, bonusGold, drop, focusDone: focus,
-      streak: streak(after), levelBefore, levelAfter,
+      streak: streak(after), levelBefore, levelAfter, ...(rest ? { kind } : {}),
     }
     set({ reward: summary })
     sfx(levelAfter > levelBefore ? 'levelup' : drop ? 'chest' : 'coin', 30)
@@ -244,10 +271,27 @@ export const useGame = create<State>()((set, get) => {
       saveTimer({ moduleId, start: Date.now(), focusMin })
       sfx('tap', 15)
     },
+    startBreak: (minutes) => {
+      const focusMin = Math.min(BREAK_MAX, Math.max(BREAK_MIN, Math.round(minutes)))
+      saveTimer({ moduleId: '', start: Date.now(), focusMin, kind: 'break' })
+      sfx('tap', 15)
+    },
     stopTimer: () => {
       const t = get().timer
       if (!t) return
       const elapsedMin = (Date.now() - t.start) / MIN
+      if (t.kind === 'break') {
+        const limit = t.focusMin ?? BREAK_MAX
+        const minutes = elapsedMin >= limit ? limit : Math.floor(elapsedMin)
+        saveTimer(null)
+        if (minutes < BREAK_MIN) {
+          get().say(`A break needs at least ${BREAK_MIN} minutes to count.`)
+          sfx('nope')
+          return
+        }
+        finishSession('', t.start, minutes, 'timer', false, undefined, 'break')
+        return
+      }
       const completed = t.focusMin !== null && elapsedMin >= t.focusMin
       const minutes = completed ? (t.focusMin as number) : Math.min(360, Math.floor(elapsedMin))
       saveTimer(null)
@@ -293,25 +337,60 @@ export const useGame = create<State>()((set, get) => {
       return null
     },
 
-    place: (unitId, x, y, zone) => {
+    place: (unitId, x, y, zone, slot) => {
       const { doc } = get()
       const u = doc.units[unitId]
-      const { cols, rows } = gardenSize(levelInfo(balance(doc, 'xp')).level, zone)
-      if (x >= cols || y >= rows) return 'That land is still locked.'
-      if (placed(doc, zone).some((p) => p.x === x && p.y === y)) return 'Something is already there.'
+      if (!u) return 'That item is gone.'
+      const err = slotError(doc, zone, x, y, slot, u.itemId, [unitId])
+      if (err) return err
       commit((d) => {
-        const next: Unit = { ...u, x, y, zone, updatedAt: Date.now() }
-        if (ITEMS[u.itemId].kind === 'plant') next.plantedAt = Date.now()
-        d.units[unitId] = next
+        d.units[unitId] = relocated(doc, u, x, y, zone, slot, Date.now())
       })
+      sfx('plant', 20)
+      return null
+    },
+    move: (unitId, x, y, zone, slot) => {
+      const { doc } = get()
+      const u = doc.units[unitId]
+      if (!u || u.x === undefined || u.y === undefined) return 'Nothing to move.'
+      const fromZone = u.zone ?? 'meadow'
+      const fromSlot = slotOf(u)
+      if (fromZone === zone && u.x === x && u.y === y && fromSlot === slot) return 'It is already there.'
+      const other = unitInSlot(doc, zone, x, y, slot, [unitId])
+      if (!other) {
+        const err = slotError(doc, zone, x, y, slot, u.itemId, [unitId])
+        if (err) return err
+        commit((d) => {
+          d.units[unitId] = relocated(doc, u, x, y, zone, slot, Date.now())
+        })
+      } else {
+        // the target is taken, so the two trade places
+        const into = slotError(doc, zone, x, y, slot, u.itemId, [unitId, other.id])
+        const back = slotError(doc, fromZone, u.x, u.y, fromSlot, other.itemId, [unitId, other.id])
+        if (into || back) return into ?? `${ITEMS[other.itemId].name} won't fit where ${ITEMS[u.itemId].name} was.`
+        const fx = u.x
+        const fy = u.y
+        commit((d) => {
+          const now = Date.now()
+          d.units[unitId] = relocated(doc, u, x, y, zone, slot, now)
+          d.units[other.id] = relocated(doc, other, fx, fy, fromZone, fromSlot, now)
+        })
+      }
       sfx('plant', 20)
       return null
     },
     stash: (unitId) =>
       commit((d) => {
-        const { x: _x, y: _y, zone: _z, ...rest } = d.units[unitId]
+        const { x: _x, y: _y, zone: _z, q: _q, ...rest } = d.units[unitId]
         d.units[unitId] = { ...rest, updatedAt: Date.now() }
       }),
+    setAnimalZone: (unitId, zone) => {
+      commit((d) => {
+        const { x: _x, y: _y, q: _q, zone: _z, ...rest } = d.units[unitId]
+        d.units[unitId] = { ...rest, ...(zone ? { zone } : {}), updatedAt: Date.now() }
+      })
+      if (zone) sfx('tap', 15)
+    },
     removeUnit: (unitId) =>
       commit((d) => {
         d.units[unitId] = { ...d.units[unitId], gone: true, updatedAt: Date.now() }
@@ -333,8 +412,10 @@ export const useGame = create<State>()((set, get) => {
       const lid = cycle ? `harvest:${unitId}:${cycle}` : `harvest:${unitId}`
       commit((d) => {
         const now = Date.now()
+        // a regrowing tree starts its next crop from scratch
+        const { banked: _b, growFrom: _g, ...base } = u
         d.units[unitId] = def.regrow
-          ? { ...u, cycles: cycle + 1, plantedAt: now, harvested: true, updatedAt: now }
+          ? { ...base, cycles: cycle + 1, plantedAt: now, harvested: true, updatedAt: now }
           : { ...u, gone: true, harvested: true, updatedAt: now }
         addLedger(d, lid, 'gold', def.harvest, `Harvested ${def.name}`)
         addLedger(d, `${lid}:g`, 'gem', def.harvestGems ?? 0, `Harvested ${def.name}`)

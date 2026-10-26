@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
-import { EXAM_KINDS, MANUAL_DAILY_CAP, dateKey, fmtMin, live, moduleExams, placed, plantProgress, uid, weekKey, weekMinutes } from '../game/calc'
+import {
+  BREAK_DAILY_CAP, BREAK_MAX, BREAK_MIN, BREAK_RATE, EXAM_KINDS, MANUAL_DAILY_CAP, dateKey, fmtMin, live, moduleExams, placed,
+  plantProgress, uid, weekKey, weekMinutes,
+} from '../game/calc'
 import { ITEMS, MODULE_COLORS, MODULE_EMOJI } from '../game/data'
 import { useGame } from '../game/store'
 import type { Exam, ExamKind, Module } from '../game/types'
@@ -34,7 +37,8 @@ export function Study() {
   const now = useNow(!!timer)
 
   const activeId = modules.find((m) => m.id === moduleId)?.id ?? modules[0]?.id ?? ''
-  const tm = timer ? doc.modules[timer.moduleId] : null
+  const tm = timer && timer.kind !== 'break' ? doc.modules[timer.moduleId] : null
+  const onBreak = timer?.kind === 'break'
   const elapsed = timer ? Math.max(0, Math.floor((now - timer.start) / 1000)) : 0
   const done = !!timer && timer.focusMin !== null && elapsed >= timer.focusMin * 60
 
@@ -70,7 +74,24 @@ export function Study() {
 
   return (
     <div className="stack">
-      {timer && tm ? (
+      {timer && onBreak ? (
+        <div className="panel center timer-card break-card">
+          <p className="muted">☕ Break · {timer.focusMin}m</p>
+          <div className="clock">{clock(Math.max(0, (timer.focusMin ?? BREAK_MAX) * 60 - elapsed))}</div>
+          <div className="bar"><span style={{ width: `${Math.min(100, (elapsed / ((timer.focusMin ?? BREAK_MAX) * 60)) * 100)}%` }} /></div>
+          <p className="muted">
+            {elapsed >= BREAK_MIN * 60
+              ? 'Long enough to count! Finish now or keep resting.'
+              : `Rest for ${BREAK_MIN} minutes for it to count. Stretch, drink some water, look away from the screen.`}
+          </p>
+          <div className="row">
+            <button className="btn gold" disabled={elapsed < BREAK_MIN * 60} onClick={st.stopTimer}>Finish &amp; collect</button>
+            <button className="btn ghost" onClick={() => confirm('End this break without rewards?') && st.cancelTimer()}>
+              {elapsed >= BREAK_MIN * 60 ? 'Discard' : 'Cancel'}
+            </button>
+          </div>
+        </div>
+      ) : timer && tm ? (
         <div className="panel center timer-card" style={{ borderColor: tm.color }}>
           <p className="muted">{tm.emoji} {tm.name} · {timer.focusMin ? `Focus ${timer.focusMin}m` : 'Free study'}</p>
           <div className="clock">
@@ -124,6 +145,8 @@ export function Study() {
         </div>
       )}
 
+      {!timer && <BreakStart />}
+
       {!timer && <ManualLog moduleId={activeId} />}
 
       {modules.length > 0 && (
@@ -144,6 +167,39 @@ export function Study() {
       )}
 
       <Recent />
+    </div>
+  )
+}
+
+const BREAK_CHOICES = Array.from({ length: (BREAK_MAX - BREAK_MIN) / 5 + 1 }, (_, i) => BREAK_MIN + i * 5)
+
+/** a timed rest with no module: half the rewards and half the plant growth */
+function BreakStart() {
+  const doc = useGame((s) => s.doc)
+  const [mins, setMins] = useState(BREAK_CHOICES[1])
+  const today = dateKey(Date.now())
+  const usedToday = live(doc.sessions)
+    .filter((s) => s.kind === 'break' && dateKey(s.start) === today)
+    .reduce((t, s) => t + s.minutes, 0)
+  const capped = usedToday >= BREAK_DAILY_CAP
+  return (
+    <div className="panel">
+      <h3>☕ Take a break</h3>
+      <div className="chips">
+        {BREAK_CHOICES.map((m) => (
+          <button key={m} className={`chip ${mins === m ? 'on' : ''}`} onClick={() => setMins(m)}>{m}m</button>
+        ))}
+      </div>
+      <p className="muted">
+        Rest for {BREAK_MIN}–{BREAK_MAX} minutes. Breaks give {Math.round(BREAK_RATE * 100)}% of the usual gold, XP and
+        plant growth, and don't count towards your study stats.
+        {capped
+          ? ' You have had your fill of break rewards today.'
+          : ` Rewards for up to ${BREAK_DAILY_CAP / 60}h of breaks a day (${fmtMin(Math.max(0, BREAK_DAILY_CAP - usedToday))} left).`}
+      </p>
+      <button className="btn big" onClick={() => useGame.getState().startBreak(mins)}>
+        ☕ Start {mins}m break
+      </button>
     </div>
   )
 }
@@ -199,11 +255,12 @@ function Recent() {
       <h3>Recent sessions</h3>
       {list.map((s) => {
         const m = doc.modules[s.moduleId]
+        const rest = s.kind === 'break'
         return (
           <div key={s.id} className="sess">
-            <span className="dot" style={{ background: m?.color ?? '#888' }} />
+            <span className="dot" style={{ background: rest ? '#c9a46a' : m?.color ?? '#888' }} />
             <div className="grow">
-              <b>{m ? `${m.emoji} ${m.name}` : 'Deleted module'}</b>
+              <b>{rest ? '☕ Break' : m ? `${m.emoji} ${m.name}` : 'Deleted module'}</b>
               <small>
                 {new Date(s.start).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ·{' '}
                 {fmtMin(s.minutes)}{s.source === 'manual' ? ' · logged' : s.focus ? ' · focus ✓' : ''}

@@ -93,7 +93,7 @@ export default function App() {
   if (!DEMO && !auth) return <Auth />
 
   return (
-    <div className="app">
+    <div className={`app ${tab === 'garden' ? 'wide' : ''}`}>
       <Hud />
       <main>
         {tab === 'garden' && <Garden goStudy={() => setTab('study')} goShop={() => setTab('shop')} />}

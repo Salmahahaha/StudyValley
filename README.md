@@ -28,10 +28,10 @@ Deploy `dist/` to Vercel or Netlify (set the two `VITE_SUPABASE_*` environment v
 
 ## Features
 
-- **Study:** modules with weekly goals and any number of exams, tests or quizzes each, a free or focus timer (25/50/90 min) and manual logging at half rewards.
+- **Study:** modules with weekly goals and any number of exams, tests or quizzes each, a free or focus timer (25/50/90 min), manual logging at half rewards, and timed breaks (20-45 min) that pay half the gold, XP and plant growth. Breaks stay out of study stats and earn for up to 2 hours a day.
 - **Economy:** gold, XP and levels, gems, streak multipliers, and lucky drops after sessions.
-- **Garden:** five zones (Meadow, Mossy Grove, Greenhouse, Crystal Cave, Sky Garden), 9 plants, 5 pots and 9 decor items, plus a day/night cycle.
-- **Character:** skin, hair and colour options, plus hats and outfits from the Style shop. Your character walks around the garden.
+- **Garden:** five zones (Meadow, Mossy Grove, Greenhouse, Crystal Cave, Sky Garden) and a day/night cycle. Every tile has a plant plot, four small decor corners, a centre and a floor, so plants and decor mix. Plants and decor can be moved (or swapped) between tiles and gardens. Animals live in a garden and roam all of it, chosen from the Animals list rather than placed on a tile. On desktop the tile menu sits beside the garden.
+- **Character:** skin, 21 hairstyles you can also mix yourself (cut, fringe, length, extras), any hair colour with optional dyed tips, plus hats and outfits from the Style shop. Your character walks around the garden.
 - **Quests:** daily quests and a chest, a weekly boss fought with your study minutes, an exam/test raid for each one with a daily pace target, and weekly module goals.
 - **Journal:** per-module stats (total time, sessions, averages, last 8 weeks, exam progress), 20 achievements that unlock wearable titles, a heatmap, a collection book, and backup and restore.
 

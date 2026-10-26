@@ -1,13 +1,24 @@
-import { GRID_H, GRID_W, ITEMS, zoneDef } from './data'
+import { GRID_H, GRID_W, ITEMS, isFloorDecor, isSmallDecor, zoneDef } from './data'
 import type { Doc, Drop, Exam, ExamKind, Module, PlantDef, PotDef, Session, Stamped, Unit } from './types'
 
 export const MIN = 60_000
 export const MANUAL_DAILY_CAP = 240
 export const MANUAL_RATE = 0.5
 export const STREAK_MIN = 10
+/** a break is a timed rest: it must run at least this long, and can be set up to the maximum */
+export const BREAK_MIN = 20
+export const BREAK_MAX = 45
+/** breaks pay (and grow plants) at this share of study */
+export const BREAK_RATE = 0.5
+/** minutes of break per day that earn anything, so a timer left running can't be farmed */
+export const BREAK_DAILY_CAP = 120
 
 export const live = <T extends Stamped>(r: Record<string, T>): T[] =>
   Object.values(r).filter((x) => !x.deleted)
+
+export const isBreak = (s: Session) => s.kind === 'break'
+/** sessions that count as study: everything except breaks (those only feed plant growth) */
+export const studySessions = (doc: Doc) => live(doc.sessions).filter((s) => !isBreak(s))
 
 export const uid = () =>
   (crypto.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`)
@@ -62,7 +73,7 @@ export const gardenSize = (level: number, zone = 'meadow') => {
 export const sessionEnd = (s: Session) => s.start + s.minutes * MIN
 
 export function minutesOnDay(doc: Doc, key: string, filter?: (s: Session) => boolean) {
-  return live(doc.sessions)
+  return studySessions(doc)
     .filter((s) => dateKey(s.start) === key && (!filter || filter(s)))
     .reduce((t, s) => t + s.eff, 0)
 }
@@ -70,7 +81,7 @@ export function minutesOnDay(doc: Doc, key: string, filter?: (s: Session) => boo
 export function streak(doc: Doc, now = Date.now()) {
   const days = new Set<string>()
   const per: Record<string, number> = {}
-  for (const s of live(doc.sessions)) {
+  for (const s of studySessions(doc)) {
     const k = dateKey(s.start)
     per[k] = (per[k] ?? 0) + s.eff
   }
@@ -88,11 +99,13 @@ export function streak(doc: Doc, now = Date.now()) {
 export function plantProgress(doc: Doc, u: Unit) {
   const def = ITEMS[u.itemId] as PlantDef
   const speed = (u.pot ? (ITEMS[u.pot] as PotDef).speed : 1) * zoneDef(u.zone).speed
-  const since = u.plantedAt ?? Date.now()
+  // after a move to another garden the progress so far is banked, so the new garden's speed only applies from then on
+  const since = u.growFrom ?? u.plantedAt ?? Date.now()
+  // breaks grow plants too (their eff is already halved)
   const raw = live(doc.sessions)
     .filter((s) => sessionEnd(s) >= since)
     .reduce((t, s) => t + s.eff, 0)
-  const minutes = raw * speed
+  const minutes = (u.banked ?? 0) + raw * speed
   // a grown fruit tree only needs to grow its next crop of fruit
   const regrowing = !!(def.regrow && u.cycles)
   const need = regrowing ? def.regrow! : def.minutes
@@ -104,22 +117,71 @@ export function plantProgress(doc: Doc, u: Unit) {
 }
 
 export const ownedUnits = (doc: Doc) => live(doc.units).filter((u) => !u.gone)
-export const inventory = (doc: Doc) => ownedUnits(doc).filter((u) => u.x === undefined)
+export const isAnimal = (itemId: string) => {
+  const d = ITEMS[itemId]
+  return d?.kind === 'decor' && d.cat === 'pet'
+}
+/** animals live in a garden (u.zone) and roam it; they never sit on a tile */
+export const animalsIn = (doc: Doc, zone: string) =>
+  ownedUnits(doc).filter((u) => isAnimal(u.itemId) && u.zone === zone)
+/** everything not out in a garden (an animal counts as out once it has a garden) */
+export const inventory = (doc: Doc) =>
+  ownedUnits(doc).filter((u) => u.x === undefined && !(isAnimal(u.itemId) && u.zone))
 export const placed = (doc: Doc, zone?: string) =>
   ownedUnits(doc).filter((u) => u.x !== undefined && (!zone || (u.zone ?? 'meadow') === zone))
-export const isPlaceable = (itemId: string) => ['plant', 'decor'].includes(ITEMS[itemId].kind)
+/** goes on a tile (animals don't, they are sent to a garden instead) */
+export const isPlaceable = (itemId: string) => {
+  const k = ITEMS[itemId].kind
+  return k === 'plant' || (k === 'decor' && !isAnimal(itemId))
+}
+
+/* ---------- tile slots: a tile holds a plant, a floor piece and decor side by side ---------- */
+
+export type Slot = 'plant' | 'floor' | 'centre' | 'c0' | 'c1' | 'c2' | 'c3'
+export const CORNERS: Slot[] = ['c0', 'c1', 'c2', 'c3']
+export const isCorner = (s: Slot) => s.length === 2 && s[0] === 'c'
+
+export function slotOf(u: Unit): Slot {
+  if (ITEMS[u.itemId].kind === 'plant') return 'plant'
+  if (isFloorDecor(u.itemId)) return 'floor'
+  return u.q === undefined ? 'centre' : (`c${u.q}` as Slot)
+}
+/** which slots of a tile an item can go in */
+export function slotsFor(itemId: string): Slot[] {
+  if (ITEMS[itemId].kind === 'plant') return ['plant']
+  if (isFloorDecor(itemId)) return ['floor']
+  return isSmallDecor(itemId) ? [...CORNERS, 'centre'] : ['centre']
+}
+export const unitInSlot = (doc: Doc, zone: string, x: number, y: number, slot: Slot, ignore: string[] = []) =>
+  placed(doc, zone).find((u) => u.x === x && u.y === y && slotOf(u) === slot && !ignore.includes(u.id))
+
+/** null when the item can go there, otherwise why not. `ignore` is for units about to move out of the way. */
+export function slotError(doc: Doc, zone: string, x: number, y: number, slot: Slot, itemId: string, ignore: string[] = []): string | null {
+  if (!ownsZone(doc, zone)) return 'That garden is still locked.'
+  const { cols, rows } = gardenSize(levelInfo(balance(doc, 'xp')).level, zone)
+  if (x < 0 || y < 0 || x >= cols || y >= rows) return 'That land is still locked.'
+  if (!slotsFor(itemId).includes(slot)) return `${ITEMS[itemId].name} doesn't fit in that spot.`
+  const here = placed(doc, zone).filter((u) => u.x === x && u.y === y && !ignore.includes(u.id))
+  const inSlot = (s: Slot) => here.some((u) => slotOf(u) === s)
+  if (slot === 'plant' || slot === 'floor') return inSlot(slot) ? 'Something is already there.' : null
+  if (slot === 'centre') return CORNERS.some(inSlot) || inSlot('centre') ? 'The corners or centre are already used.' : null
+  return inSlot(slot) || inSlot('centre') ? 'Something is already there.' : null
+}
 export const ownsZone = (doc: Doc, id: string) => id === 'meadow' || claimed(doc, `zone:${id}`)
 
 export function rewardFor(
   minutes: number,
-  source: 'timer' | 'manual',
+  source: 'timer' | 'manual' | 'break',
   focus: boolean,
   streakDays: number,
-  manualToday: number,
+  /** minutes of this kind already counted today, for the daily caps */
+  usedToday: number,
 ) {
   let eff = minutes
   if (source === 'manual') {
-    eff = Math.min(minutes, Math.max(0, MANUAL_DAILY_CAP - manualToday)) * MANUAL_RATE
+    eff = Math.min(minutes, Math.max(0, MANUAL_DAILY_CAP - usedToday)) * MANUAL_RATE
+  } else if (source === 'break') {
+    eff = Math.min(minutes, Math.max(0, BREAK_DAILY_CAP - usedToday)) * BREAK_RATE
   }
   const mult = (1 + Math.min(0.5, 0.1 * streakDays)) * (focus ? 1.2 : 1)
   return { eff, gold: Math.round(eff * mult), xp: Math.round(eff * 2 * mult) }
@@ -149,7 +211,7 @@ export interface QuestDef {
   progress: (doc: Doc, day: string) => number
 }
 
-const todays = (doc: Doc, day: string) => live(doc.sessions).filter((s) => dateKey(s.start) === day)
+const todays = (doc: Doc, day: string) => studySessions(doc).filter((s) => dateKey(s.start) === day)
 
 export const QUEST_POOL: QuestDef[] = [
   { id: 'study30', label: 'Study for 30 minutes', target: 30, reward: 40, progress: (d, k) => Math.floor(todays(d, k).reduce((t, s) => t + s.eff, 0)) },
@@ -175,7 +237,7 @@ export function dailyQuests(day: string): QuestDef[] {
 export const claimed = (doc: Doc, id: string) => !!doc.ledger[id] && !doc.ledger[id].deleted
 
 export function weekMinutes(doc: Doc, wk: string, moduleId?: string) {
-  return live(doc.sessions)
+  return studySessions(doc)
     .filter((s) => weekKey(s.start) === wk && (!moduleId || s.moduleId === moduleId))
     .reduce((t, s) => t + s.eff, 0)
 }
@@ -188,7 +250,7 @@ export const fmtMin = (m: number) => {
 
 export function bestStreak(doc: Doc) {
   const per: Record<string, number> = {}
-  for (const s of live(doc.sessions)) per[dateKey(s.start)] = (per[dateKey(s.start)] ?? 0) + s.eff
+  for (const s of studySessions(doc)) per[dateKey(s.start)] = (per[dateKey(s.start)] ?? 0) + s.eff
   const days = Object.keys(per).filter((k) => per[k] >= STREAK_MIN).sort()
   let best = 0
   let run = 0
@@ -271,7 +333,7 @@ export function examInfo(doc: Doc, m: Module, ex: Exam, now = Date.now()) {
 /* ---------- per-module stats ---------- */
 
 export function moduleStats(doc: Doc, moduleId: string, now = Date.now(), weeks = 8) {
-  const list = live(doc.sessions).filter((s) => s.moduleId === moduleId)
+  const list = studySessions(doc).filter((s) => s.moduleId === moduleId)
   const minutes = list.reduce((t, s) => t + s.minutes, 0)
   const eff = list.reduce((t, s) => t + s.eff, 0)
   const wk = weekKey(now)

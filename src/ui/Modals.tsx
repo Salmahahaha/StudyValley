@@ -12,12 +12,13 @@ export function RewardModal() {
   return (
     <div className="overlay" onClick={dismiss}>
       <div className="panel modal pop" onClick={(e) => e.stopPropagation()}>
-        <h2>{r.focusDone ? '🎯 Focus complete!' : '✨ Session complete!'}</h2>
-        <p className="muted">{fmtMin(r.minutes)} of study</p>
+        <h2>{r.kind === 'break' ? '☕ Break complete!' : r.focusDone ? '🎯 Focus complete!' : '✨ Session complete!'}</h2>
+        <p className="muted">{fmtMin(r.minutes)} of {r.kind === 'break' ? 'rest' : 'study'}</p>
         <div className="loot">
           <div className="loot-item" style={{ animationDelay: '.1s' }}>+{r.gold} 🪙</div>
           <div className="loot-item" style={{ animationDelay: '.3s' }}>+{r.xp} XP</div>
         </div>
+        {r.kind === 'break' && <p className="muted">Breaks pay half. Now back to it when you're ready!</p>}
         {r.streak > 1 && <p>🔥 {r.streak}-day streak boosting your rewards</p>}
         {r.drop && (
           <div className="drop" style={{ animationDelay: '.6s' }}>

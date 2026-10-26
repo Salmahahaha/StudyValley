@@ -64,6 +64,7 @@ export function Shop() {
                   const err = useGame.getState().buy(it.id)
                   if (err) useGame.getState().say(err)
                   else if (it.kind === 'cosmetic') useGame.getState().say(`Bought ${it.name}! Wear it from the Journal tab.`)
+                  else if (it.kind === 'decor' && it.cat === 'pet') useGame.getState().say(`Bought ${it.name}! Let it out from the Animals list in your garden.`)
                   else useGame.getState().say(`Bought ${ITEMS[it.id].name}! Find it in your garden bag.`)
                 }}
               >

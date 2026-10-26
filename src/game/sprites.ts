@@ -1,4 +1,6 @@
-import { DEFAULT_AVATAR, GRID_H, GRID_W, HAIR, ITEMS } from './data'
+import { DEFAULT_AVATAR, GRID_H, GRID_W, ITEMS } from './data'
+import { TIE, hairColorOf, hairCovers, hairOverhang, hairRamp, specOf, validHex } from './hair'
+import type { HairPt } from './hair'
 import type { Avatar, PotDef } from './types'
 
 /*
@@ -649,14 +651,7 @@ const SKIN_RAMPS = [
   ['#946042', '#7c4e34', '#643d29', '#4e2e1f', '#362015'],
 ]
 const OUTLINE = hex('#59312e')
-const HAIR_RAMPS: Record<string, string[]> = {
-  '#3a2616': ['#5c4030', '#47301f', '#382416', '#2a1a0f', '#1c1009'],
-  '#6b3a1a': ['#a8683a', '#8a522a', '#6b3a1a', '#552c12', '#3c1d0a'],
-  '#c9892a': ['#f2c062', '#dea446', '#c9892a', '#a66c1c', '#7a4c12'],
-  '#e8d070': ['#fff3b8', '#f6e294', '#e8d070', '#c9ac4c', '#9a7f30'],
-  '#c94a4a': ['#f28a6a', '#de6a52', '#c94a4a', '#a23636', '#742424'],
-  '#7a5cd6': ['#c2a8ff', '#a084f0', '#7a5cd6', '#5c40b0', '#3e2a80'],
-}
+const HAIR_TIE = hex('#f2c94c')
 
 interface OutfitPal {
   top: string[]
@@ -721,50 +716,55 @@ const isOutline = (r: number, g: number, b: number) => (r - OUTLINE[0]) ** 2 + (
 /**
  * Builds a recoloured sprite sheet (64px cells, rows = down/left/right/up)
  * with the player's skin, hair and clothes painted onto the base character.
+ * `first` paints only the first frame facing front, which is all a portrait needs.
  */
-function buildCharacter(av: Avatar, anim: 'walk' | 'idle'): HTMLCanvasElement {
+function buildCharacter(av: Avatar, anim: 'walk' | 'idle', first = false): HTMLCanvasElement {
   const body = img(anim === 'walk' ? 'girl_walk_body' : 'girl_idle_body')
   const head = img(anim === 'walk' ? 'girl_walk_head' : 'girl_idle_head')
   const W = body.width
   const H = body.height
-  const [cv, c] = canvas(W, H)
+  // a portrait only needs the first 64px cell, so it gets a canvas that size
+  const OW = first ? 64 : W
+  const OH = first ? 64 : H
+  const [cv, c] = canvas(OW, OH)
   const skin = SKIN_RAMPS[av.skin] ?? SKIN_RAMPS[1]
-  const hairRamp = HAIR_RAMPS[HAIR[av.hairColor] ?? HAIR[0]] ?? HAIR_RAMPS['#3a2616']
+  const ramp = hairRamp(hairColorOf(av))
+  const tipRamp = validHex(av.hairTip) ? hairRamp(av.hairTip) : null
+  const spec = specOf(av)
   const o = OUTFITS[av.outfit ?? 'overalls'] ?? OUTFITS.overalls
   const B = pixels(body)
   const Hd = pixels(head)
-  const out = c.createImageData(W, H)
-  const put = (x: number, y: number, rgb: RGB) => {
-    const k = (y * W + x) * 4
-    out.data[k] = rgb[0]
-    out.data[k + 1] = rgb[1]
-    out.data[k + 2] = rgb[2]
-    out.data[k + 3] = 255
+  // behind the body, body and head, over the body
+  const [cvBack, cBack] = canvas(OW, OH)
+  const [cvMain, cMain] = canvas(OW, OH)
+  const [cvFront, cFront] = canvas(OW, OH)
+  const outBack = cBack.createImageData(OW, OH)
+  const out = cMain.createImageData(OW, OH)
+  const outFront = cFront.createImageData(OW, OH)
+  const paint = (img: ImageData, x: number, y: number, rgb: RGB) => {
+    if (x < 0 || y < 0 || x >= OW || y >= OH) return
+    const k = (y * OW + x) * 4
+    img.data[k] = rgb[0]
+    img.data[k + 1] = rgb[1]
+    img.data[k + 2] = rgb[2]
+    img.data[k + 3] = 255
   }
-  const hairOutline = hex(hairRamp[4])
+  const put = (x: number, y: number, rgb: RGB) => paint(out, x, y, rgb)
+  const hairOutline = hex(ramp[4])
+  const plot = (img: ImageData, pts: HairPt[], ox: number, oy: number, mirrorW: number) => {
+    for (const p of pts) {
+      const rgb = p.s === TIE ? HAIR_TIE : hex(((tipRamp && p.t > 0.5 ? tipRamp : ramp))[p.s])
+      paint(img, ox + (mirrorW ? mirrorW - 1 - p.x : p.x), oy + p.y, rgb)
+    }
+  }
 
-  for (let cy = 0; cy < H / 64; cy++)
-    for (let cx = 0; cx < W / 64; cx++) {
+  const rows = first ? 1 : H / 64
+  const cols = first ? 1 : W / 64
+  for (let cy = 0; cy < rows; cy++)
+    for (let cx = 0; cx < cols; cx++) {
       const dir = cy // 0 down, 1 left, 2 right, 3 up
       const bb = bbox(body, cx * 64, cy * 64, 64, 64)
       const hb = bbox(head, cx * 64, cy * 64, 64, 64)
-
-      // long hair falls behind the body
-      if (av.hair === 1) {
-        const top = hb.y + hb.h - 3
-        for (let y = top; y < top + 7; y++)
-          for (let x = hb.x + 1; x < hb.x + hb.w - 1; x++) {
-            const nx = (x - hb.x) / hb.w
-            let on = false
-            if (dir === 3) on = true
-            else if (dir === 0) on = nx < 0.22 || nx > 0.78
-            else if (dir === 1) on = nx > 0.45
-            else on = nx < 0.55
-            if (!on) continue
-            const edge = x === hb.x + 1 || x === hb.x + hb.w - 2 || y === top + 6
-            put(x, y, edge ? hairOutline : hex(hairRamp[y % 3 === 0 ? 1 : 2]))
-          }
-      }
 
       // body: clothes by height band, skin for the hands
       for (let y = bb.y; y < bb.y + bb.h; y++) {
@@ -790,12 +790,12 @@ function buildCharacter(av: Avatar, anim: 'walk' | 'idle'): HTMLCanvasElement {
           }
           const nx = (x - bb.x) / bb.w
           const hand = rel > 0.38 && rel < 0.56 && (x === rowMin || x === rowMax) && dir !== 3
-          let ramp: string[]
-          if (hand) ramp = skin
+          let rp: string[]
+          if (hand) rp = skin
           else if (rel < (o.longTop ? 0.86 : 0.52)) {
-            ramp = o.top
-            if (o.bib && rel > 0.22 && nx > 0.28 && nx < 0.72 && dir !== 3) ramp = o.bib
-            if (o.cape && dir === 3) ramp = o.cape
+            rp = o.top
+            if (o.bib && rel > 0.22 && nx > 0.28 && nx < 0.72 && dir !== 3) rp = o.bib
+            if (o.cape && dir === 3) rp = o.cape
             if (o.belt && Math.abs(rel - 0.47) < 0.05) {
               put(x, y, hex(o.belt))
               continue
@@ -804,58 +804,51 @@ function buildCharacter(av: Avatar, anim: 'walk' | 'idle'): HTMLCanvasElement {
               put(x, y, hex(o.trim))
               continue
             }
-          } else if (rel < 0.86) ramp = o.cape && dir === 3 && rel < 0.75 ? o.cape : o.legs
-          else ramp = o.shoes
-          put(x, y, hex(ramp[lv]))
+          } else if (rel < 0.86) rp = o.cape && dir === 3 && rel < 0.75 ? o.cape : o.legs
+          else rp = o.shoes
+          put(x, y, hex(rp[lv]))
         }
       }
 
-      // head: skin, with hair painted over the crown
+      // head: skin, with hair painted over whatever the cut covers
       for (let y = hb.y; y < hb.y + hb.h; y++)
         for (let x = hb.x; x < hb.x + hb.w; x++) {
           const k = (y * W + x) * 4
           if (Hd.data[k + 3] < 10) continue
           const r = Hd.data[k], g = Hd.data[k + 1], b = Hd.data[k + 2]
-          const nx = (x - hb.x) / (hb.w - 1)
-          const ny = (y - hb.y) / (hb.h - 1)
-          let hair = false
-          if (dir === 0) hair = ny < 0.36 || (ny < 0.66 && (nx < 0.13 || nx > 0.87))
-          else if (dir === 3) hair = ny < 0.88
-          else if (dir === 1) hair = ny < 0.36 || (nx > 0.52 && ny < 0.82)
-          else hair = ny < 0.36 || (nx < 0.48 && ny < 0.82)
+          const hair = hairCovers(dir, x - hb.x, y - hb.y, hb.w, spec)
           const outline = isOutline(r, g, b)
           const lv = nearestLevel(r, g, b)
-          if (hair && (lv >= 0 || outline)) put(x, y, outline ? hairOutline : hex(hairRamp[Math.min(4, lv + 1)]))
+          if (hair && (lv >= 0 || outline)) put(x, y, outline ? hairOutline : hex(ramp[Math.min(4, lv + 1)]))
           else if (outline) put(x, y, OUTLINE)
           else if (lv >= 0) put(x, y, hex(skin[lv]))
           else put(x, y, [r, g, b])
         }
-      // a little fringe and a highlight so the hair reads as hair
-      if (dir !== 3) {
-        const fy = hb.y + Math.round(hb.h * 0.36)
-        for (let x = hb.x + 2; x < hb.x + hb.w - 2; x += 3) put(x, fy, hex(hairRamp[2]))
+      // a small highlight so the crown reads as hair
+      if (spec.cut > 0 && dir !== 3) {
+        put(hb.x + Math.round(hb.w * 0.35), hb.y + 2, hex(ramp[0]))
+        put(hb.x + Math.round(hb.w * 0.35) + 1, hb.y + 2, hex(ramp[0]))
       }
-      put(hb.x + Math.round(hb.w * 0.35), hb.y + 2, hex(hairRamp[0]))
-      put(hb.x + Math.round(hb.w * 0.35) + 1, hb.y + 2, hex(hairRamp[0]))
 
-      if (av.hair === 2) {
-        const bx = dir === 1 ? hb.x + hb.w - 4 : dir === 2 ? hb.x + 1 : hb.x + Math.floor(hb.w / 2) - 2
-        const by = hb.y - 3
-        const bun = ['.oo.', 'o12o', 'o22o', '.oo.']
-        bun.forEach((row, yy) => [...row].forEach((ch, xx) => {
-          if (ch === '.') return
-          put(bx + xx, by + yy, ch === 'o' ? hairOutline : hex(hairRamp[ch === '1' ? 0 : 2]))
-        }))
-      }
+      // everything that hangs off the head, behind and in front of the body
+      const lay = hairOverhang(dir, spec)
+      const mirror = dir === 2 ? hb.w : 0
+      plot(outBack, lay.back, hb.x, hb.y, mirror)
+      plot(outFront, lay.front, hb.x, hb.y, mirror)
     }
-  c.putImageData(out, 0, 0)
+  cBack.putImageData(outBack, 0, 0)
+  cMain.putImageData(out, 0, 0)
+  cFront.putImageData(outFront, 0, 0)
+  c.drawImage(cvBack, 0, 0)
+  c.drawImage(cvMain, 0, 0)
+  c.drawImage(cvFront, 0, 0)
 
   // hats sit on top of everything
   const hat = av.hat && HATS[av.hat]
   if (hat) {
     const hs = bitmap(hat.rows, hat.pal)
-    for (let cy = 0; cy < H / 64; cy++)
-      for (let cx = 0; cx < W / 64; cx++) {
+    for (let cy = 0; cy < rows; cy++)
+      for (let cx = 0; cx < cols; cx++) {
         const hb = bbox(head, cx * 64, cy * 64, 64, 64)
         const centre = hb.x + Math.floor(hb.w / 2) + (cy === 1 ? 1 : cy === 2 ? -1 : 0)
         c.drawImage(hs.img, centre - Math.floor(hs.w / 2), hb.y - hs.h + hat.dy)
@@ -864,8 +857,14 @@ function buildCharacter(av: Avatar, anim: 'walk' | 'idle'): HTMLCanvasElement {
   return cv
 }
 
+/** everything about an avatar that changes how it is drawn, as a cache key */
+const avatarKey = (av: Avatar) => {
+  const s = specOf(av)
+  return [av.skin, s.cut, s.fringe, s.back, s.tail, hairColorOf(av), validHex(av.hairTip) ? av.hairTip : '', av.hat ?? '', av.outfit ?? ''].join(':')
+}
+
 export const charSheet = (av: Avatar, anim: 'walk' | 'idle') =>
-  cached(`char:${anim}:${av.skin}:${av.hair}:${av.hairColor}:${av.hat ?? ''}:${av.outfit ?? ''}`, () => buildCharacter(av, anim))
+  cached(`char:${anim}:${avatarKey(av)}`, () => buildCharacter(av, anim))
 
 /** dir: 0 down, 1 up, 2 left, 3 right (same as pets) */
 export function avatarSpr(av: Avatar, moving: boolean, dir: number, t: number): Spr {
@@ -1173,25 +1172,40 @@ function paintLocked(c: C, zone: string, cols: number, rows: number, r: () => nu
         }
       }
   }
-  // the boundary: a fence on grass, a ledge elsewhere
-  const f = fence()
-  if (wild) {
-    if (rows < GRID_H) for (let x = 0; x < ux; x += 32) c.drawImage(f.img, x, uy - 14)
-    if (cols < GRID_W)
-      for (let y = BAND; y < uy; y += 6) {
-        c.fillStyle = OUT
-        c.fillRect(ux - 3, y, 5, 6)
-        c.fillStyle = WOOD[2]
-        c.fillRect(ux - 2, y, 3, 5)
-        c.fillStyle = WOOD[3]
-        c.fillRect(ux - 2, y, 1, 5)
-      }
-  } else {
+  // the boundary: a ledge on the ground in most zones. On grass it is a real fence, drawn with the
+  // other props (see fenceProps) so the plants and animals inside stand behind it.
+  if (!wild) {
     const ledge = zone === 'sky' ? '#ffffff' : zone === 'cave' ? '#6a6888' : '#7a5634'
     c.fillStyle = ledge
     if (rows < GRID_H) c.fillRect(0, uy - 2, ux, 3)
     if (cols < GRID_W) c.fillRect(ux - 1, BAND, 3, uy - BAND)
   }
+}
+
+const fencePost = () =>
+  painter(5, 6, (_p, r) => {
+    r(0, 0, 5, 6, OUT)
+    r(1, 0, 3, 5, WOOD[2])
+    r(1, 0, 1, 5, WOOD[3])
+  }, 2, 5)
+
+/**
+ * The fence along the edge of the unlocked land on grassy zones. These are scene props sorted by their
+ * feet like everything else, so anything growing inside the garden is drawn behind the fence.
+ */
+export function fenceProps(zone: string, cols: number, rows: number): Prop[] {
+  if (zone !== 'meadow' && zone !== 'grove') return []
+  const out: Prop[] = []
+  const ux = cols * T
+  const uy = BAND + rows * T
+  if (rows < GRID_H) {
+    // sits just below the last row, so the plants stand right behind its top edge
+    for (let x = 0; x < ux; x += 32) out.push({ s: () => decorSpr('fence'), x: x + 16, y: uy + 13 })
+  }
+  if (cols < GRID_W) {
+    for (let y = BAND; y < uy; y += 6) out.push({ s: () => cached('fencepost', fencePost), x: ux - 1, y: y + 5 })
+  }
+  return out
 }
 
 /** whole static floor for a zone: band, ground, plot marks and locked land. Cached. */
@@ -1257,8 +1271,8 @@ function rawIcon(itemId: string, stage?: number, pot?: string, t = 0): Spr {
 
 /** head-and-shoulders crop of the avatar for the HUD */
 export const portraitSpr = (av: Avatar): Spr =>
-  cached(`portrait:${av.skin}:${av.hair}:${av.hairColor}:${av.hat ?? ''}:${av.outfit ?? ''}`, () => {
-    const sheet = charSheet(av, 'idle')
+  cached(`portrait:${avatarKey(av)}`, () => {
+    const sheet = buildCharacter(av, 'idle', true)
     const b = bbox(sheet, 0, 0, 64, 64)
     return spr(sheet, b.x - 1, b.y - 1, b.w + 2, b.h + 2)
   })

@@ -1,5 +1,5 @@
 import { supabase } from './supabase'
-import { emptyDoc } from './calc'
+import { emptyDoc, isAnimal } from './calc'
 import { ITEMS, LEGACY_IDS } from './data'
 import type { Doc, Stamped } from './types'
 
@@ -19,7 +19,12 @@ export function migrate(doc: Doc): Doc {
     let itemId = LEGACY_IDS[u.itemId] ?? u.itemId
     const pot = u.pot && ITEMS[u.pot] ? u.pot : undefined
     if (!ITEMS[itemId]) itemId = 'carrot'
-    if (itemId !== u.itemId || pot !== u.pot) {
+    if (isAnimal(itemId) && u.x !== undefined) {
+      // animals used to stand on a tile; now they just live in a garden and roam it
+      const { x: _x, y: _y, q: _q, ...rest } = u
+      units[id] = { ...rest, itemId, pot, zone: u.zone ?? 'meadow' }
+      changed = true
+    } else if (itemId !== u.itemId || pot !== u.pot) {
       units[id] = { ...u, itemId, pot }
       changed = true
     }
