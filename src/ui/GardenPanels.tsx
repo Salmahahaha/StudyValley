@@ -1,6 +1,6 @@
 import { useGame } from '../game/store'
 import {
-  CORNERS, animalsIn, fmtMin, inventory, isAnimal, isCorner, isPlaceable, ownedUnits, plantProgress, slotsFor, unitInSlot,
+  CORNERS, animalsIn, fmtMin, fmtRefund, inventory, isAnimal, isCorner, isPlaceable, ownedUnits, plantProgress, refundOf, slotsFor, unitInSlot,
 } from '../game/calc'
 import type { Slot } from '../game/calc'
 import { ITEMS, RARITY_COLOR, ZONES, zoneDef } from '../game/data'
@@ -201,6 +201,22 @@ function Picker(props: { slot: Slot; onPick: (u: Unit) => void; goShop: () => vo
   )
 }
 
+/** a full refund of what the decor cost; only shown for pieces that were bought */
+function RefundButton({ unitId }: { unitId: string }) {
+  const doc = useGame((s) => s.doc)
+  const r = refundOf(doc, unitId)
+  if (!r) return null
+  const name = ITEMS[doc.units[unitId].itemId].name
+  return (
+    <button
+      className="btn small red"
+      onClick={() => confirm(`Refund ${name} for ${fmtRefund(r)}? It will be removed from your valley.`) && useGame.getState().refundUnit(unitId)}
+    >
+      Refund {fmtRefund(r)}
+    </button>
+  )
+}
+
 function UnitCard(props: {
   unit: Unit
   onMove: () => void
@@ -223,6 +239,7 @@ function UnitCard(props: {
         <div className="row">
           <button className="btn small" onClick={props.onMove}>✋ Move</button>
           <button className="btn small ghost" onClick={props.stash}>Move to bag</button>
+          <RefundButton unitId={unit.id} />
         </div>
       </div>
     )
@@ -308,6 +325,7 @@ export function AnimalsPanel({ zone, goShop }: { zone: string; goShop: () => voi
               ) : (
                 <button className="btn small" onClick={() => setAnimalZone(u.id, zone)}>{elsewhere ? 'Bring here' : 'Let out'}</button>
               )}
+              <RefundButton unitId={u.id} />
             </div>
           )
         })

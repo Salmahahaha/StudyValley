@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import {
   BREAK_MAX, BREAK_MIN, MIN, STREAK_MIN, balance, boss, claimed, dailyQuests, dateKey, emptyDoc, examInfo, inventory,
-  isCorner, levelInfo, live, minutesOnDay, moduleExams, ownsZone, plantProgress, rewardFor, rollDrop, slotError, slotOf,
+  fmtRefund, isCorner, levelInfo, live, minutesOnDay, moduleExams, ownsZone, plantProgress, refundOf, rewardFor, rollDrop, slotError, slotOf,
   streak, uid, unitInSlot, weekKey, weekMinutes,
 } from './calc'
 import type { Slot } from './calc'
@@ -57,6 +57,8 @@ interface State {
   /** sends an animal to roam a garden, or back to the bag with null */
   setAnimalZone: (unitId: string, zone: string | null) => void
   removeUnit: (unitId: string) => void
+  /** takes bought decor out of the game and gives back exactly what it cost */
+  refundUnit: (unitId: string) => string | null
   applyPot: (plantUnitId: string, potUnitId: string) => void
   harvest: (unitId: string) => void
 
@@ -395,6 +397,19 @@ export const useGame = create<State>()((set, get) => {
       commit((d) => {
         d.units[unitId] = { ...d.units[unitId], gone: true, updatedAt: Date.now() }
       }),
+    refundUnit: (unitId) => {
+      const r = refundOf(get().doc, unitId)
+      if (!r) return 'This one can’t be refunded.'
+      const name = ITEMS[get().doc.units[unitId].itemId].name
+      commit((d) => {
+        d.units[unitId] = { ...d.units[unitId], gone: true, updatedAt: Date.now() }
+        addLedger(d, `refund:${unitId}`, 'gold', r.gold, `Refunded ${name}`)
+        addLedger(d, `refund:${unitId}:g`, 'gem', r.gem, `Refunded ${name}`)
+      })
+      sfx('coin', 20)
+      get().say(`Refunded ${name}: +${fmtRefund(r)}`)
+      return null
+    },
     applyPot: (plantUnitId, potUnitId) => {
       commit((d) => {
         const pot = d.units[potUnitId]

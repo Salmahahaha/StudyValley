@@ -236,6 +236,22 @@ export function dailyQuests(day: string): QuestDef[] {
 
 export const claimed = (doc: Doc, id: string) => !!doc.ledger[id] && !doc.ledger[id].deleted
 
+/**
+ * what a bought piece of decor can be refunded for: exactly what was paid, read from the purchase record.
+ * Decor that was never bought (a drop, say) has no record and so no refund, and nothing is refunded twice.
+ */
+export function refundOf(doc: Doc, unitId: string): { gold: number; gem: number } | null {
+  const u = doc.units[unitId]
+  const def = u && !u.deleted && !u.gone ? ITEMS[u.itemId] : undefined
+  if (def?.kind !== 'decor' || claimed(doc, `refund:${unitId}`)) return null
+  const paid = (id: string) => (claimed(doc, id) ? -doc.ledger[id].delta : 0)
+  const gold = paid(`buy:${unitId}`)
+  const gem = paid(`buy:${unitId}:g`)
+  return gold > 0 || gem > 0 ? { gold, gem } : null
+}
+export const fmtRefund = (r: { gold: number; gem: number }) =>
+  [r.gold && `${r.gold} 🪙`, r.gem && `${r.gem} 💎`].filter(Boolean).join(' ')
+
 export function weekMinutes(doc: Doc, wk: string, moduleId?: string) {
   return studySessions(doc)
     .filter((s) => weekKey(s.start) === wk && (!moduleId || s.moduleId === moduleId))

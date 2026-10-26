@@ -338,7 +338,7 @@ canvas.garden { margin: 0 auto; }
 .slot.on { background: var(--gold); border-color: var(--wood-dark); }
 .slot:disabled { opacity: .35; cursor: not-allowed; }
 
-.animal { display: flex; align-items: center; gap: 8px; border-top: 2px dashed var(--parch2); padding: 6px 0 0; }
+.animal { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-top: 2px dashed var(--parch2); padding: 6px 0 0; }
 .move-banner { background: #fff1b8; }
 .move-prompt { background: #fff1b8; border-radius: 8px; padding: 8px; }
 
