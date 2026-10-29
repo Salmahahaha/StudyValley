@@ -48,7 +48,8 @@ export const emptyDoc = (): Doc => ({
 export const balance = (doc: Doc, cur: 'gold' | 'gem' | 'xp') =>
   live(doc.ledger).reduce((s, e) => (e.cur === cur ? s + e.delta : s), 0)
 
-export const xpForLevel = (l: number) => 100 + 70 * (l - 1)
+/** every level costs a bit more than the one before, and the gap itself keeps widening (9% compounding on top of a steady climb) */
+export const xpForLevel = (l: number) => Math.round(((100 + 70 * (l - 1)) * 1.09 ** (l - 1)) / 5) * 5
 export function levelInfo(xp: number) {
   let level = 1
   let rem = xp
@@ -65,8 +66,8 @@ export const gardenSize = (level: number, zone = 'meadow') => {
     return { cols: z.cols, rows: z.rows }
   }
   return {
-    cols: Math.min(GRID_W, 4 + Math.floor(level / 3)),
-    rows: Math.min(GRID_H, 3 + Math.floor(level / 4)),
+    cols: Math.min(GRID_W, 4 + Math.floor(level / 4)),
+    rows: Math.min(GRID_H, 3 + Math.floor(level / 5)),
   }
 }
 
@@ -339,7 +340,8 @@ export function examInfo(doc: Doc, m: Module, ex: Exam, now = Date.now()) {
     daysLeft,
     studied,
     goal,
-    perDay: daysLeft > 0 ? Math.max(0, (goal - studied) / daysLeft) : 0,
+    // the exam day itself is a study day too, so today through the exam date all share the remaining goal
+    perDay: daysLeft >= 0 ? Math.max(0, (goal - studied) / (daysLeft + 1)) : 0,
     done: goal > 0 && studied >= goal,
     reward: Math.round(ex.goalH * 20),
     id: `exam:${m.id}:${ex.id}`,

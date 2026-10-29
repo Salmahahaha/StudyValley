@@ -109,10 +109,10 @@ export const COSMETICS = cosmetics
 
 export const ZONES: ZoneDef[] = [
   { id: 'meadow', name: 'Meadow', emoji: '🌼', blurb: 'Where it all begins. Grows with your level.', minLevel: 1, cost: 0, cols: 8, rows: 6, speed: 1 },
-  { id: 'grove', name: 'Mossy Grove', emoji: '🌲', blurb: 'Shady and calm. Plants grow 10% faster.', minLevel: 7, cost: 1500, cols: 6, rows: 4, speed: 1.1 },
-  { id: 'greenhouse', name: 'Greenhouse', emoji: '🏡', blurb: 'Warm all year. Plants grow 20% faster.', minLevel: 9, cost: 3000, cols: 8, rows: 5, speed: 1.2 },
-  { id: 'cave', name: 'Crystal Cave', emoji: '💎', blurb: 'Glowing and mysterious. Plants grow 30% faster.', minLevel: 11, cost: 5000, cols: 6, rows: 6, speed: 1.3 },
-  { id: 'sky', name: 'Sky Garden', emoji: '☁️', blurb: 'Above the clouds. Plants grow 50% faster.', minLevel: 13, cost: 0, gemCost: 15, cols: 8, rows: 6, speed: 1.5 },
+  { id: 'grove', name: 'Mossy Grove', emoji: '🌲', blurb: 'Shady and calm. Plants grow 10% faster.', minLevel: 7, cost: 4000, cols: 6, rows: 4, speed: 1.1 },
+  { id: 'greenhouse', name: 'Greenhouse', emoji: '🏡', blurb: 'Warm all year. Plants grow 20% faster.', minLevel: 9, cost: 9000, cols: 8, rows: 5, speed: 1.2 },
+  { id: 'cave', name: 'Crystal Cave', emoji: '💎', blurb: 'Glowing and mysterious. Plants grow 30% faster.', minLevel: 11, cost: 18000, cols: 6, rows: 6, speed: 1.3 },
+  { id: 'sky', name: 'Sky Garden', emoji: '☁️', blurb: 'Above the clouds. Plants grow 50% faster.', minLevel: 13, cost: 0, gemCost: 30, cols: 8, rows: 6, speed: 1.5 },
 ]
 export const zoneDef = (id?: string) => ZONES.find((z) => z.id === (id ?? 'meadow')) ?? ZONES[0]
 

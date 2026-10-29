@@ -11,7 +11,7 @@ import {
 } from '../game/sprites'
 import type { Spr } from '../game/sprites'
 import { useGame } from '../game/store'
-import type { Avatar, Unit } from '../game/types'
+import type { Avatar, PlantDef, Unit } from '../game/types'
 import { AnimalsPanel, TilePanel } from './GardenPanels'
 import { useAtlas } from './useAtlas'
 
@@ -95,9 +95,13 @@ function standAt(u: Unit, sl: Slot) {
 
 const wideScreen = () => window.matchMedia('(min-width: 900px)').matches
 
+type Tile = { x: number; y: number }
+const uniqTiles = (tiles: Tile[]) => tiles.filter((t, i) => tiles.findIndex((o) => o.x === t.x && o.y === t.y) === i)
+const ARROWS: Record<string, [number, number]> = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }
+
 export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () => void }) {
   const doc = useGame((s) => s.doc)
-  const { move, say, buyZone } = useGame.getState()
+  const { move, say, buyZone, harvestAll, moveMany } = useGame.getState()
   const atlas = useAtlas()
   const level = levelInfo(balance(doc, 'xp')).level
   const [zone, setZone] = useState('meadow')
@@ -125,25 +129,32 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
   const mover = movingUnit && !movingUnit.gone && !movingUnit.deleted ? movingUnit : undefined
   const movingAt = mover && mover.x !== undefined && (mover.zone ?? 'meadow') === zone ? { x: mover.x, y: mover.y ?? 0, slot: slotOf(mover) } : null
 
+  /** several things picked together (Shift/Ctrl-click, or Select multiple) so they can be moved as one block */
+  const [group, setGroup] = useState<string[]>([])
+  const [selectMode, setSelectMode] = useState(false)
+  const [groupMoving, setGroupMoving] = useState(false)
+  const groupUnits = group
+    .map((id) => doc.units[id])
+    .filter((u): u is Unit => !!u && !u.gone && !u.deleted && u.x !== undefined && u.y !== undefined)
+  const groupTiles = uniqTiles(groupUnits.filter((u) => (u.zone ?? 'meadow') === zone).map((u) => ({ x: u.x as number, y: u.y as number })))
+  /** the first thing picked is the anchor: it lands on the tile you drop on, and the rest keep their places around it */
+  const anchor = groupUnits[0]
+  const shifted = (to: Tile) =>
+    anchor ? uniqTiles(groupUnits.map((u) => ({ x: (u.x as number) + to.x - (anchor.x as number), y: (u.y as number) + to.y - (anchor.y as number) }))) : []
+  const groupPreview = groupMoving && sel ? shifted(sel).filter((t) => t.x >= 0 && t.y >= 0 && t.x < cols && t.y < rows) : []
+  const readyHere = drawn.filter((d) => d.ready)
+  const readyGold = readyHere.reduce((t, d) => t + (ITEMS[d.u.itemId] as PlantDef).harvest, 0)
+
   const wrap = useRef<HTMLDivElement>(null)
   const cv = useRef<HTMLCanvasElement>(null)
   const parts = useRef<Particle[]>([])
-  const view = useRef({ drawn, animals, cols, rows, sel, slot, movingAt, zone, avatar, atlas })
+  const view = useRef({ drawn, animals, cols, rows, sel, slot, movingAt, groupTiles, groupPreview, zone, avatar, atlas })
   const redraw = useRef<(() => void) | null>(null)
   useEffect(() => {
-    view.current = { drawn, animals, cols, rows, sel, slot, movingAt, zone, avatar, atlas }
+    view.current = { drawn, animals, cols, rows, sel, slot, movingAt, groupTiles, groupPreview, zone, avatar, atlas }
     redraw.current?.()
   })
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
-      if (moving) setMoving(null)
-      else setSel(null)
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [moving])
   // on a phone the panel sits under the garden, so bring it into view when a tile is picked
   const selKey = sel ? `${sel.x},${sel.y}` : ''
   useEffect(() => {
@@ -416,6 +427,16 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
         ctx.fillRect(x0, y0, isCorner(m.slot) ? 16 : T, isCorner(m.slot) ? 16 : T)
         bracket(x0, y0, isCorner(m.slot) ? 16 : T, o, '#ffd23f')
       }
+      for (const g of v.groupPreview) {
+        ctx.fillStyle = 'rgba(255,214,90,.25)'
+        ctx.fillRect(g.x * T, BAND + g.y * T, T, T)
+        bracket(g.x * T, BAND + g.y * T, T, o, '#ffd23f')
+      }
+      for (const g of v.groupTiles) {
+        ctx.fillStyle = 'rgba(110,200,255,.3)'
+        ctx.fillRect(g.x * T, BAND + g.y * T, T, T)
+        bracket(g.x * T, BAND + g.y * T, T, o, '#7fd0ff')
+      }
       if (v.sel) {
         const x0 = v.sel.x * T
         const y0 = BAND + v.sel.y * T
@@ -478,6 +499,96 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
     return opts.find((s) => !unitInSlot(doc, zone, x, y, s)) ?? opts[0]
   }
 
+  /** plants have one plot per tile, so a tap is enough: move there, or swap with the plant that's there */
+  const dropPlant = (x: number, y: number) => {
+    if (!mover) return
+    const err = move(mover.id, x, y, zone, 'plant')
+    if (err) say(err)
+    else {
+      puff(x, y)
+      setMoving(null)
+      setSel({ x, y })
+      setSlot('plant')
+    }
+  }
+  /** adds everything on a tile to the group, or (unless `add`) takes it back out when it is all in already */
+  const pickTile = (x: number, y: number, add = false) => {
+    const ids = placed(doc, zone).filter((u) => u.x === x && u.y === y).map((u) => u.id)
+    if (!ids.length) {
+      if (!add) say('Nothing on that tile to pick')
+      return
+    }
+    setGroup((g) => (!add && ids.every((id) => g.includes(id)) ? g.filter((id) => !ids.includes(id)) : [...g, ...ids.filter((id) => !g.includes(id))]))
+  }
+  const dropGroup = (x: number, y: number) => {
+    if (!anchor) return setGroupMoving(false)
+    const tiles = shifted({ x, y })
+    const err = moveMany(group, x - (anchor.x as number), y - (anchor.y as number), zone)
+    if (err) return say(err)
+    tiles.forEach((t) => puff(t.x, t.y))
+    setGroup([])
+    setGroupMoving(false)
+    setSel({ x, y })
+    setSlot(startSlot(x, y))
+  }
+  const startGroupMove = () => {
+    setMoving(null)
+    setGroupMoving(true)
+  }
+  const clearGroup = () => {
+    setGroup([])
+    setGroupMoving(false)
+    setSelectMode(false)
+  }
+  const doHarvestAll = () => {
+    readyHere.forEach(({ u }) => burst(u.x ?? 0, u.y ?? 0, (ITEMS[u.itemId] as PlantDef).harvest, plantSpr(u.itemId, 4)))
+    harvestAll(zone)
+  }
+
+  /** the cursor moves one tile at a time with the arrow keys; Shift also picks each tile it lands on */
+  const goTo = (x: number, y: number, extend = false) => {
+    if (extend) {
+      if (sel && group.length === 0) pickTile(sel.x, sel.y, true)
+      pickTile(x, y, true)
+    }
+    // the key handler reads this ref, so keep it current for fast repeated presses that land before a re-render
+    keys.current.sel = { x, y }
+    setSel({ x, y })
+    setSlot(mover ? moveSlot(mover, x, y) : startSlot(x, y))
+  }
+  const keys = useRef({ showCanvas, sel, cols, rows, goTo, dropPlant, dropGroup, mover, groupMoving, group, moving })
+  useEffect(() => {
+    keys.current = { showCanvas, sel, cols, rows, goTo, dropPlant, dropGroup, mover, groupMoving, group, moving }
+  })
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement | null
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)) return
+      const k = keys.current
+      if (e.key === 'Escape') {
+        if (k.groupMoving) setGroupMoving(false)
+        else if (k.group.length) {
+          setGroup([])
+          setSelectMode(false)
+        } else if (k.moving) setMoving(null)
+        else setSel(null)
+        return
+      }
+      if (!k.showCanvas || e.ctrlKey || e.metaKey || e.altKey) return
+      const dir = ARROWS[e.key]
+      if (dir) {
+        e.preventDefault()
+        if (!k.sel) return k.goTo(0, 0)
+        k.goTo(Math.min(k.cols - 1, Math.max(0, k.sel.x + dir[0])), Math.min(k.rows - 1, Math.max(0, k.sel.y + dir[1])), e.shiftKey)
+      } else if (e.key === 'Enter' && k.sel && el?.tagName !== 'BUTTON') {
+        if (k.groupMoving) k.dropGroup(k.sel.x, k.sel.y)
+        else if (k.mover && ITEMS[k.mover.itemId].kind === 'plant') k.dropPlant(k.sel.x, k.sel.y)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   const tap = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const r = e.currentTarget.getBoundingClientRect()
     const lx = ((e.clientX - r.left) / r.width) * GW
@@ -496,17 +607,19 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
       setSel(null)
       return
     }
+    if (groupMoving) {
+      setSel({ x, y })
+      dropGroup(x, y)
+      return
+    }
+    if (!mover && (e.shiftKey || e.ctrlKey || e.metaKey || selectMode)) {
+      pickTile(x, y)
+      setSel({ x, y })
+      return
+    }
     if (mover) {
       if (ITEMS[mover.itemId].kind === 'plant') {
-        // plants have one plot per tile, so a tap is enough: move there, or swap with the plant that's there
-        const err = move(mover.id, x, y, zone, 'plant')
-        if (err) say(err)
-        else {
-          puff(x, y)
-          setMoving(null)
-          setSel({ x, y })
-          setSlot('plant')
-        }
+        dropPlant(x, y)
       } else {
         setSel({ x, y })
         setSlot(moveSlot(mover, x, y))
@@ -558,6 +671,16 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
           </div>
         ) : (
           <>
+            <div className="row garden-tools">
+              <button className={`chip ${selectMode ? 'on' : ''}`} onClick={() => setSelectMode(!selectMode)} title="Or hold Shift / Ctrl while tapping tiles">
+                ☑ Select multiple
+              </button>
+              {readyHere.length > 0 && (
+                <button className="btn gold small pulse" onClick={doHarvestAll}>
+                  🧺 Harvest all ({readyHere.length}) +{readyGold} 🪙
+                </button>
+              )}
+            </div>
             <div ref={wrap} className="garden-wrap">
               <canvas ref={cv} className="garden" onPointerDown={tap} />
             </div>
@@ -574,7 +697,27 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
           </div>
         )}
 
-        {showCanvas && sel && (
+        {showCanvas && (selectMode || groupMoving || groupUnits.length > 0) && (
+          <div className="panel move-banner stack" style={{ gap: 8 }}>
+            {groupMoving ? (
+              <p>✋ Moving <b>{groupUnits.length}</b> picked item{groupUnits.length === 1 ? '' : 's'}. Tap a tile (or move with the arrow keys and press Enter): the first one you picked lands there and the rest keep their layout.</p>
+            ) : groupUnits.length > 0 ? (
+              <p>☑ <b>{groupUnits.length}</b> picked{groupUnits.some((u) => (u.zone ?? 'meadow') !== zone) ? ` (${groupUnits.filter((u) => (u.zone ?? 'meadow') === zone).length} in this garden)` : ''}. Keep tapping tiles to add or remove them.</p>
+            ) : (
+              <p>☑ Tap tiles to pick everything on them. Shift/Ctrl-click or Shift + arrow keys works too.</p>
+            )}
+            <div className="row">
+              {groupMoving ? (
+                <button className="btn small ghost" onClick={() => setGroupMoving(false)}>Cancel move</button>
+              ) : (
+                groupUnits.length > 0 && <button className="btn small gold" onClick={startGroupMove}>✋ Move together</button>
+              )}
+              <button className="btn small ghost" onClick={clearGroup}>{groupUnits.length > 0 ? 'Clear' : 'Done'}</button>
+            </div>
+          </div>
+        )}
+
+        {showCanvas && sel && !selectMode && !groupMoving && (
           <TilePanel
             zone={zone}
             x={sel.x}
@@ -589,7 +732,7 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
           />
         )}
 
-        {showCanvas && !sel && (
+        {showCanvas && !sel && !selectMode && !groupMoving && (
           <div className="panel">
             {nothingYet ? (
               <>
@@ -605,7 +748,7 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
                 <h3>🌿 Your garden</h3>
                 <p className="muted">
                   Tap a tile to plant or decorate it. Every tile has a plot for a plant plus corners, a centre and a floor for decorations, so you can mix them.
-                  Tap a plant or decoration, then ✋ Move to rearrange.
+                  Tap a plant or decoration, then ✋ Move to rearrange. Arrow keys walk the cursor tile to tile; hold Shift while tapping or arrowing to pick several things and move them together.
                 </p>
               </>
             )}

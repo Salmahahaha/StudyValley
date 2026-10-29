@@ -109,7 +109,8 @@ export function Quests() {
                 <small>
                   {e.daysLeft > 0 ? `${e.daysLeft} day${e.daysLeft === 1 ? '' : 's'} left` : e.daysLeft === 0 ? 'Today! Good luck 🍀' : 'Exam passed'}
                   {' · '}{fmtMin(e.studied)} / {fmtMin(e.goal)}
-                  {!e.done && e.daysLeft > 0 ? ` · ~${fmtMin(e.perDay)}/day to hit your goal` : ''}
+                  {!e.done && e.daysLeft > 0 ? ` · ~${fmtMin(e.perDay)}/day to hit your goal (exam day counts)` : ''}
+                  {!e.done && e.daysLeft === 0 ? ` · ${fmtMin(Math.max(0, e.goal - e.studied))} to go today` : ''}
                 </small>
               </div>
               <button className={`btn small ${e.done && !got ? 'gold' : ''}`} disabled={!e.done || got} onClick={() => st.claimExam(m.id, e.exam.id)}>

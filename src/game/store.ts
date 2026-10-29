@@ -2,7 +2,7 @@ import { create } from 'zustand'
 import {
   BREAK_MAX, BREAK_MIN, MIN, STREAK_MIN, balance, boss, claimed, dailyQuests, dateKey, emptyDoc, examInfo, inventory,
   fmtRefund, isCorner, levelInfo, live, minutesOnDay, moduleExams, ownsZone, plantProgress, refundOf, rewardFor, rollDrop, slotError, slotOf,
-  streak, uid, unitInSlot, weekKey, weekMinutes,
+  placed, streak, uid, unitInSlot, weekKey, weekMinutes,
 } from './calc'
 import type { Slot } from './calc'
 import { ITEMS, zoneDef } from './data'
@@ -61,6 +61,10 @@ interface State {
   refundUnit: (unitId: string) => string | null
   applyPot: (plantUnitId: string, potUnitId: string) => void
   harvest: (unitId: string) => void
+  /** harvests every ready plant in one garden (and only that one); returns what it paid out */
+  harvestAll: (zone: string) => { count: number; gold: number; gem: number }
+  /** moves several placed units together, keeping their layout, so `dx`/`dy` shift every one (all or none) */
+  moveMany: (unitIds: string[], dx: number, dy: number, zone: string) => string | null
 
   claimQuest: (day: string, questId: string) => void
   openChest: (day: string) => void
@@ -105,6 +109,19 @@ function relocated(doc: Doc, u: Unit, x: number, y: number, zone: string, slot: 
     }
   }
   return next
+}
+
+/** pays out a ready plant: it is gone afterwards, or for a fruit tree starts its next crop */
+function harvestInto(d: Doc, u: Unit, def: PlantDef, now: number) {
+  const cycle = u.cycles ?? 0
+  const lid = cycle ? `harvest:${u.id}:${cycle}` : `harvest:${u.id}`
+  // a regrowing tree starts its next crop from scratch
+  const { banked: _b, growFrom: _g, ...base } = u
+  d.units[u.id] = def.regrow
+    ? { ...base, cycles: cycle + 1, plantedAt: now, harvested: true, updatedAt: now }
+    : { ...u, gone: true, harvested: true, updatedAt: now }
+  addLedger(d, lid, 'gold', def.harvest, `Harvested ${def.name}`)
+  addLedger(d, `${lid}:g`, 'gem', def.harvestGems ?? 0, `Harvested ${def.name}`)
 }
 
 const STREAK_REWARDS: Record<number, { gold?: number; gem?: number }> = {
@@ -423,20 +440,45 @@ export const useGame = create<State>()((set, get) => {
       const u = doc.units[unitId]
       const def = ITEMS[u.itemId] as PlantDef
       if (!plantProgress(doc, u).ready) return
-      const cycle = u.cycles ?? 0
-      const lid = cycle ? `harvest:${unitId}:${cycle}` : `harvest:${unitId}`
-      commit((d) => {
-        const now = Date.now()
-        // a regrowing tree starts its next crop from scratch
-        const { banked: _b, growFrom: _g, ...base } = u
-        d.units[unitId] = def.regrow
-          ? { ...base, cycles: cycle + 1, plantedAt: now, harvested: true, updatedAt: now }
-          : { ...u, gone: true, harvested: true, updatedAt: now }
-        addLedger(d, lid, 'gold', def.harvest, `Harvested ${def.name}`)
-        addLedger(d, `${lid}:g`, 'gem', def.harvestGems ?? 0, `Harvested ${def.name}`)
-      })
+      commit((d) => harvestInto(d, u, def, Date.now()))
       sfx('bloom', 40)
       get().say(`Harvested ${def.name}: +${def.harvest} 🪙${def.harvestGems ? ` +${def.harvestGems} 💎` : ''}`)
+    },
+    harvestAll: (zone) => {
+      const { doc } = get()
+      const ready = placed(doc, zone).filter((u) => ITEMS[u.itemId].kind === 'plant' && plantProgress(doc, u).ready)
+      const total = { count: ready.length, gold: 0, gem: 0 }
+      if (!ready.length) return total
+      commit((d) => {
+        const now = Date.now()
+        for (const u of ready) {
+          const def = ITEMS[u.itemId] as PlantDef
+          total.gold += def.harvest
+          total.gem += def.harvestGems ?? 0
+          harvestInto(d, u, def, now)
+        }
+      })
+      sfx('bloom', 40)
+      get().say(`Harvested ${total.count} plant${total.count === 1 ? '' : 's'}: +${total.gold} 🪙${total.gem ? ` +${total.gem} 💎` : ''}`)
+      return total
+    },
+    moveMany: (unitIds, dx, dy, zone) => {
+      const { doc } = get()
+      const group = unitIds.map((id) => doc.units[id]).filter((u) => u && !u.deleted && !u.gone && u.x !== undefined && u.y !== undefined)
+      if (!group.length) return 'Nothing to move.'
+      if (!dx && !dy && group.every((u) => (u.zone ?? 'meadow') === zone)) return 'It is already there.'
+      const ids = group.map((u) => u.id)
+      // the group lands as a block, so every piece must fit once the group has left its old tiles
+      for (const u of group) {
+        const err = slotError(doc, zone, (u.x as number) + dx, (u.y as number) + dy, slotOf(u), u.itemId, ids)
+        if (err) return `${ITEMS[u.itemId].name}: ${err}`
+      }
+      commit((d) => {
+        const now = Date.now()
+        for (const u of group) d.units[u.id] = relocated(doc, u, (u.x as number) + dx, (u.y as number) + dy, zone, slotOf(u), now)
+      })
+      sfx('plant', 20)
+      return null
     },
 
     claimQuest: (day, questId) => {
