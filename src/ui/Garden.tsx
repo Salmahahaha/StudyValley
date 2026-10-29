@@ -131,7 +131,6 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
 
   /** several things picked together (Shift/Ctrl-click, or Select multiple) so they can be moved as one block */
   const [group, setGroup] = useState<string[]>([])
-  const [selectMode, setSelectMode] = useState(false)
   const [groupMoving, setGroupMoving] = useState(false)
   const groupUnits = group
     .map((id) => doc.units[id])
@@ -538,7 +537,6 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
   const clearGroup = () => {
     setGroup([])
     setGroupMoving(false)
-    setSelectMode(false)
   }
   const doHarvestAll = () => {
     readyHere.forEach(({ u }) => burst(u.x ?? 0, u.y ?? 0, (ITEMS[u.itemId] as PlantDef).harvest, plantSpr(u.itemId, 4)))
@@ -567,10 +565,8 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
       const k = keys.current
       if (e.key === 'Escape') {
         if (k.groupMoving) setGroupMoving(false)
-        else if (k.group.length) {
-          setGroup([])
-          setSelectMode(false)
-        } else if (k.moving) setMoving(null)
+        else if (k.group.length) setGroup([])
+        else if (k.moving) setMoving(null)
         else setSel(null)
         return
       }
@@ -612,7 +608,9 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
       dropGroup(x, y)
       return
     }
-    if (!mover && (e.shiftKey || e.ctrlKey || e.metaKey || selectMode)) {
+    if (!mover && (e.shiftKey || e.ctrlKey || e.metaKey)) {
+      // the tile already selected counts as the first pick, so select one, then Ctrl-click the others
+      if (group.length === 0 && sel && !(sel.x === x && sel.y === y)) pickTile(sel.x, sel.y, true)
       pickTile(x, y)
       setSel({ x, y })
       return
@@ -671,16 +669,13 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
           </div>
         ) : (
           <>
-            <div className="row garden-tools">
-              <button className={`chip ${selectMode ? 'on' : ''}`} onClick={() => setSelectMode(!selectMode)} title="Or hold Shift / Ctrl while tapping tiles">
-                ☑ Select multiple
-              </button>
-              {readyHere.length > 0 && (
+            {readyHere.length > 0 && (
+              <div className="row garden-tools">
                 <button className="btn gold small pulse" onClick={doHarvestAll}>
                   🧺 Harvest all ({readyHere.length}) +{readyGold} 🪙
                 </button>
-              )}
-            </div>
+              </div>
+            )}
             <div ref={wrap} className="garden-wrap">
               <canvas ref={cv} className="garden" onPointerDown={tap} />
             </div>
@@ -697,27 +692,25 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
           </div>
         )}
 
-        {showCanvas && (selectMode || groupMoving || groupUnits.length > 0) && (
+        {showCanvas && (groupMoving || groupUnits.length > 0) && (
           <div className="panel move-banner stack" style={{ gap: 8 }}>
             {groupMoving ? (
               <p>✋ Moving <b>{groupUnits.length}</b> picked item{groupUnits.length === 1 ? '' : 's'}. Tap a tile (or move with the arrow keys and press Enter): the first one you picked lands there and the rest keep their layout.</p>
             ) : groupUnits.length > 0 ? (
-              <p>☑ <b>{groupUnits.length}</b> picked{groupUnits.some((u) => (u.zone ?? 'meadow') !== zone) ? ` (${groupUnits.filter((u) => (u.zone ?? 'meadow') === zone).length} in this garden)` : ''}. Keep tapping tiles to add or remove them.</p>
-            ) : (
-              <p>☑ Tap tiles to pick everything on them. Shift/Ctrl-click or Shift + arrow keys works too.</p>
-            )}
+              <p>☑ <b>{groupUnits.length}</b> picked{groupUnits.some((u) => (u.zone ?? 'meadow') !== zone) ? ` (${groupUnits.filter((u) => (u.zone ?? 'meadow') === zone).length} in this garden)` : ''}. Ctrl/Shift-click more tiles to add or remove them.</p>
+            ) : null}
             <div className="row">
               {groupMoving ? (
                 <button className="btn small ghost" onClick={() => setGroupMoving(false)}>Cancel move</button>
               ) : (
                 groupUnits.length > 0 && <button className="btn small gold" onClick={startGroupMove}>✋ Move together</button>
               )}
-              <button className="btn small ghost" onClick={clearGroup}>{groupUnits.length > 0 ? 'Clear' : 'Done'}</button>
+              <button className="btn small ghost" onClick={clearGroup}>Clear</button>
             </div>
           </div>
         )}
 
-        {showCanvas && sel && !selectMode && !groupMoving && (
+        {showCanvas && sel && !groupMoving && (
           <TilePanel
             zone={zone}
             x={sel.x}
@@ -732,7 +725,7 @@ export function Garden({ goStudy, goShop }: { goStudy: () => void; goShop: () =>
           />
         )}
 
-        {showCanvas && !sel && !selectMode && !groupMoving && (
+        {showCanvas && !sel && !groupMoving && (
           <div className="panel">
             {nothingYet ? (
               <>

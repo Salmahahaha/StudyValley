@@ -116,6 +116,7 @@ export function TilePanel(props: {
           onCancel={() => props.setMoving(null)}
         />
       ) : unit ? (
+        <>
         <UnitCard
           key={unit.id}
           unit={unit}
@@ -134,6 +135,8 @@ export function TilePanel(props: {
             fx.puff(x, y)
           }}
         />
+        <p className="muted">💡 Hold Ctrl (or Shift) and click more tiles to pick several at once and move them together.</p>
+        </>
       ) : (
         <Picker
           slot={slot}
